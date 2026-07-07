@@ -1,0 +1,100 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: media-service
+  namespace: streamforge
+  labels:
+    app: media-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: media-service
+  template:
+    metadata:
+      labels:
+        app: media-service
+    spec:
+      containers:
+        - name: media-service
+          image: streamforge/media-service:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: SERVER_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: streamforge-config
+                  key: SERVER_PORT
+            - name: PUBLIC_WS_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: streamforge-config
+                  key: PUBLIC_WS_BASE_URL
+            - name: REDIS_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: streamforge-config
+                  key: REDIS_HOST
+            - name: REDIS_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: streamforge-config
+                  key: REDIS_PORT
+            - name: REDIS_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: streamforge-config
+                  key: REDIS_DB
+            - name: LIVEKIT_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: streamforge-config
+                  key: LIVEKIT_URL
+            - name: LIVEKIT_TOKEN_TTL_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: streamforge-config
+                  key: LIVEKIT_TOKEN_TTL_SECONDS
+            - name: LIVEKIT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: streamforge-secret
+                  key: LIVEKIT_API_KEY
+            - name: LIVEKIT_API_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: streamforge-secret
+                  key: LIVEKIT_API_SECRET
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: media-service
+  namespace: streamforge
+  labels:
+    app: media-service
+spec:
+  type: NodePort
+  selector:
+    app: media-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      nodePort: 31080
+

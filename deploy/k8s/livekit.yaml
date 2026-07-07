@@ -1,0 +1,168 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: livekit
+  namespace: streamforge
+  labels:
+    app: livekit
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: livekit
+  template:
+    metadata:
+      labels:
+        app: livekit
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: livekit
+          image: livekit/livekit-server:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config
+            - /etc/livekit/livekit.yaml
+          env:
+            - name: LIVEKIT_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: streamforge-secret
+                  key: LIVEKIT_KEYS
+          ports:
+            - name: signal
+              containerPort: 7880
+              protocol: TCP
+            - name: rtc-tcp
+              containerPort: 7881
+              protocol: TCP
+            - name: rtc-30000
+              containerPort: 30000
+              protocol: UDP
+            - name: rtc-30001
+              containerPort: 30001
+              protocol: UDP
+            - name: rtc-30002
+              containerPort: 30002
+              protocol: UDP
+            - name: rtc-30003
+              containerPort: 30003
+              protocol: UDP
+            - name: rtc-30004
+              containerPort: 30004
+              protocol: UDP
+            - name: rtc-30005
+              containerPort: 30005
+              protocol: UDP
+            - name: rtc-30006
+              containerPort: 30006
+              protocol: UDP
+            - name: rtc-30007
+              containerPort: 30007
+              protocol: UDP
+            - name: rtc-30008
+              containerPort: 30008
+              protocol: UDP
+            - name: rtc-30009
+              containerPort: 30009
+              protocol: UDP
+            - name: rtc-30010
+              containerPort: 30010
+              protocol: UDP
+          readinessProbe:
+            tcpSocket:
+              port: 7880
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 7880
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          volumeMounts:
+            - name: livekit-config
+              mountPath: /etc/livekit
+              readOnly: true
+      volumes:
+        - name: livekit-config
+          configMap:
+            name: livekit-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: livekit
+  namespace: streamforge
+  labels:
+    app: livekit
+spec:
+  type: NodePort
+  selector:
+    app: livekit
+  ports:
+    - name: signal
+      protocol: TCP
+      port: 7880
+      targetPort: 7880
+      nodePort: 30880
+    - name: rtc-tcp
+      protocol: TCP
+      port: 7881
+      targetPort: 7881
+      nodePort: 30881
+    - name: rtc-30000
+      protocol: UDP
+      port: 30000
+      targetPort: 30000
+      nodePort: 30000
+    - name: rtc-30001
+      protocol: UDP
+      port: 30001
+      targetPort: 30001
+      nodePort: 30001
+    - name: rtc-30002
+      protocol: UDP
+      port: 30002
+      targetPort: 30002
+      nodePort: 30002
+    - name: rtc-30003
+      protocol: UDP
+      port: 30003
+      targetPort: 30003
+      nodePort: 30003
+    - name: rtc-30004
+      protocol: UDP
+      port: 30004
+      targetPort: 30004
+      nodePort: 30004
+    - name: rtc-30005
+      protocol: UDP
+      port: 30005
+      targetPort: 30005
+      nodePort: 30005
+    - name: rtc-30006
+      protocol: UDP
+      port: 30006
+      targetPort: 30006
+      nodePort: 30006
+    - name: rtc-30007
+      protocol: UDP
+      port: 30007
+      targetPort: 30007
+      nodePort: 30007
+    - name: rtc-30008
+      protocol: UDP
+      port: 30008
+      targetPort: 30008
+      nodePort: 30008
+    - name: rtc-30009
+      protocol: UDP
+      port: 30009
+      targetPort: 30009
+      nodePort: 30009
+    - name: rtc-30010
+      protocol: UDP
+      port: 30010
+      targetPort: 30010
+      nodePort: 30010
+
