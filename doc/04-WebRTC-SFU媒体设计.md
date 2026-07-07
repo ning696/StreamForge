@@ -1,198 +1,160 @@
-# StreamForge WebRTC / SFU 媒体设计
+﻿# StreamForge WebRTC / SFU 媒体设计
 
 ## 1. 设计目标
 
-MVP 阶段直接采用 SFU 架构，不实现 P2P 中间态。媒体服务负责接收每个参与者的上行音视频轨道，并转发给同一房间内的其他参与者。
+MVP 阶段直接采用 SFU 架构，不实现 P2P 中间态。`livekit-standalone-cluster` 分支使用 LiveKit 独立集群承载 WebRTC 与 SFU 能力，StreamForge Go 服务不自研媒体转发。
 
 核心目标：
 
 - 支持单房间 4-8 人音视频通话。
 - 支持屏幕共享。
 - 支持静音、关闭摄像头、切换设备。
-- 支持 Go 媒体服务多实例部署。
-- 保证同一房间固定在同一个媒体实例中完成媒体转发。
+- 使用 LiveKit 处理 WebRTC 信令、ICE、Track 发布订阅和 SFU 转发。
+- StreamForge 只负责业务房间和 LiveKit Token 签发。
 
 ## 2. MVP 媒体边界
 
 MVP 做：
 
-- 浏览器 `getUserMedia` 获取麦克风和摄像头。
-- 浏览器 `getDisplayMedia` 获取屏幕共享。
-- WebSocket 交换 SDP 和 ICE Candidate。
-- Go 媒体实例使用 pion/webrtc 建立 PeerConnection。
-- Go 媒体实例把参与者发布的 Track 转发给同房间其他参与者。
+- 前端使用 `livekit-client` 连接 LiveKit 房间。
+- 前端使用 LiveKit SDK 打开摄像头和麦克风。
+- 前端使用 LiveKit SDK 打开屏幕共享。
+- LiveKit Server 负责 WebRTC 信令、ICE、SFU 转发和参与者媒体状态。
+- Go 房间服务签发指定房间、指定参与者的 LiveKit Token。
 
 MVP 不做：
 
 - P2P 直连通话。
 - MCU 混流。
+- StreamForge Go 服务自研 SFU。
+- 由 StreamForge Go 服务处理 SDP、ICE Candidate、PeerConnection、RTP/RTCP 或 Track。
 - 服务端视频转码。
-- Simulcast / SVC。
-- 自适应订阅策略。
-- 同一房间跨多个媒体实例级联。
 - 录制与回放。
 
-## 3. 媒体实例与房间关系
+## 3. LiveKit 房间关系
 
 ```text
-media-service-1
-  Room A
-    Peer A1
-    Peer A2
-    Peer A3
+StreamForge roomId = 839204
+  -> livekitRoomName = streamforge-839204
 
-media-service-2
-  Room B
-    Peer B1
-    Peer B2
+LiveKit Room streamforge-839204
+  Participant user-1
+    microphone track
+    camera track
+  Participant user-2
+    microphone track
+    camera track
 ```
 
 规则：
 
-- 房间创建时分配媒体实例。
-- 房间加入时复用已有媒体实例。
-- 房间内媒体转发只发生在所属媒体实例进程内。
-- Redis 保存 `roomId -> mediaInstanceId`。
-- WebRTC 对象只保存在媒体实例内存中。
+- StreamForge 生成业务 `roomId`。
+- Go 房间服务将业务 `roomId` 映射为 `livekitRoomName`。
+- Go 房间服务为每个用户签发加入该 LiveKit 房间的 Token。
+- LiveKit 管理房间内实际媒体连接、Track 和参与者状态。
+- StreamForge Redis 不保存 `roomId -> mediaInstanceId` 媒体路由。
 
-## 4. PeerConnection 模型
+## 4. 前端连接模型
 
-MVP 采用每个参与者一个 `RTCPeerConnection` 到 SFU 的模型。
-
-每个 PeerConnection 承载：
-
-- 本地上行音频 Track。
-- 本地上行摄像头视频 Track。
-- 可选屏幕共享视频 Track。
-- 来自同房间其他参与者的下行 Track。
-
-浏览器侧：
+浏览器侧不直接创建应用层 `RTCPeerConnection`。前端封装 LiveKit SDK：
 
 ```text
-Local MediaStream
-  audio track
-  camera video track
-  optional screen video track
-      │
-      ▼
-RTCPeerConnection
-      │
-      ▼
-Go SFU media instance
+REST joinRoom
+  -> livekitUrl + livekitToken
+  -> new LiveKit Room()
+  -> room.connect(livekitUrl, livekitToken)
+  -> localParticipant.enableCameraAndMicrophone()
+  -> RoomEvent.TrackSubscribed 渲染远端 Track
 ```
 
-服务端侧：
+每个参与者通过 LiveKit SDK 发布：
 
-```text
-Peer A publishes audio/video
-  -> SFU stores Track publication
-  -> SFU creates local tracks for Peer B/C
-  -> Peer B/C receive remote streams
-```
+- 麦克风音频。
+- 摄像头视频。
+- 可选屏幕共享视频。
+
+前端通过 LiveKit 事件订阅：
+
+- 远端参与者加入和离开。
+- Track 发布和取消发布。
+- Track 订阅和取消订阅。
+- 摄像头、麦克风、屏幕共享状态变化。
+- 连接断开、重连和错误状态。
 
 ## 5. Track 类型
 
-| Track 类型 | 来源 | 说明 |
-|:---|:---|:---|
-| `audio` | `getUserMedia` | 麦克风音频 |
-| `camera` | `getUserMedia` | 摄像头视频 |
-| `screen` | `getDisplayMedia` | 屏幕共享视频 |
+| Track 类型 | LiveKit Source | 来源 | 说明 |
+|:---|:---|:---|:---|
+| 音频 | `Microphone` | 摄像头/麦克风授权 | 麦克风音频 |
+| 摄像头视频 | `Camera` | 摄像头授权 | 用户摄像头画面 |
+| 屏幕共享视频 | `ScreenShare` | 屏幕选择授权 | 屏幕、窗口或标签页画面 |
 
-Track 元数据：
-
-```json
-{
-  "trackId": "track-001",
-  "peerId": "peer-abc",
-  "userId": 1,
-  "kind": "video",
-  "source": "camera",
-  "enabled": true
-}
-```
+StreamForge 不自定义服务端 Track 元数据。需要展示的用户身份优先来自 LiveKit participant identity、name 和 metadata。
 
 ## 6. 编解码策略
 
-MVP 优先使用浏览器和 pion/webrtc 默认支持的编解码能力。
-
-推荐目标：
+MVP 使用 LiveKit 和浏览器默认协商能力。推荐目标：
 
 - 音频：Opus。
-- 视频：VP8。
+- 视频：VP8 或浏览器/LiveKit 默认可用编码。
 
-如果浏览器协商出 H.264 且服务端支持，可以接受，但 MVP 不为 H.264 做额外优化。
+MVP 不为 H.264、Simulcast、SVC 或带宽自适应做额外策略。若 LiveKit 默认启用相关能力，前端只使用稳定的基础配置。
 
-## 7. ICE 和 NAT 穿越
+## 7. ICE、TURN 和 NAT 穿越
 
 MVP 配置：
 
 - 本地开发支持 `localhost`。
-- 默认提供可配置 STUN。
-- TURN 作为部署配置项保留，但 MVP 不强制实现 TURN 服务。
-
-示例 ICE 配置：
-
-```json
-{
-  "iceServers": [
-    {
-      "urls": ["stun:stun.l.google.com:19302"]
-    }
-  ]
-}
-```
+- LiveKit 负责向浏览器下发 ICE 配置。
+- 部署文档保留 TURN/TLS、公网 IP、RTC UDP 端口配置。
 
 生产部署注意：
 
 - HTTPS 是浏览器调用摄像头、麦克风、屏幕共享的必要条件之一，`localhost` 例外。
-- WebSocket 可以通过 Ingress 代理。
-- WebRTC 媒体 UDP 端口需要单独规划，不能只依赖普通 HTTP Ingress。
+- LiveKit 信令可以通过 WebSocket/HTTPS 暴露。
+- LiveKit RTC UDP 端口需要单独规划，不能只依赖普通 HTTP Ingress。
+- 企业网络或受限网络建议配置 TURN/TLS。
 
 ## 8. 协商流程
 
-### 8.1 加入房间后开始协商
+### 8.1 加入房间后开始媒体连接
 
 ```text
-1. 前端通过 REST 获取 roomId 对应媒体实例连接信息
-2. 前端连接 WebSocket
-3. 前端发送 room.join
-4. 服务端返回 room.joined 和 room.snapshot
-5. 前端获取本地媒体
-6. 前端创建 RTCPeerConnection
-7. 前端添加本地 Track
-8. 前端创建 Offer 并通过 WebSocket 发送 webrtc.offer
-9. 服务端创建 PeerConnection 并设置 RemoteDescription
-10. 服务端创建 Answer 并返回 webrtc.answer
-11. 双方交换 ICE Candidate
-12. 连接建立后服务端转发 Track
+1. 前端通过 REST 获取 livekitUrl 和 livekitToken
+2. 前端创建 LiveKit Room 实例
+3. 前端注册 RoomEvent 监听器
+4. 前端调用 room.connect(livekitUrl, livekitToken)
+5. 前端启用摄像头和麦克风
+6. LiveKit SDK 发布本地 Track
+7. LiveKit Server 完成 WebRTC 协商和 SFU 转发
+8. 前端收到 TrackSubscribed 事件并渲染远端视频/音频
 ```
 
-### 8.2 新 Peer 加入
+### 8.2 新参与者加入
 
-新 Peer 加入后：
+新参与者加入后：
 
-- 服务端向房间内其他 Peer 广播 `peer.joined`。
-- 新 Peer 通过 `room.snapshot` 获取已有成员。
-- 服务端根据当前 Track 发布关系为 PeerConnection 添加下行 Track。
-- 必要时触发重新协商。
+- LiveKit 向其他客户端触发参与者加入事件。
+- 新参与者发布本地 Track。
+- 其他客户端收到远端 Track 订阅事件并渲染。
+- StreamForge WebSocket 可选地广播业务成员摘要，但媒体成员事实以 LiveKit 为准。
 
 ## 9. 媒体转发
 
-当服务端收到某个 Peer 的上行 Track：
+媒体转发由 LiveKit 负责：
 
-1. 识别 `peerId`、`trackId`、`kind`、`source`。
-2. 注册到房间内 Track 发布列表。
-3. 为房间内其他 Peer 创建对应的下行 LocalTrack。
-4. 从上行 Track 读取 RTP 包并写入下行 LocalTrack。
-5. 监听 Track 结束，清理发布关系并通知其他 Peer。
+1. 浏览器向 LiveKit 发布本地 Track。
+2. LiveKit 根据房间和订阅关系向其他参与者转发媒体。
+3. 前端使用 LiveKit SDK 订阅和渲染远端 Track。
+4. Track 结束、取消发布或参与者离开时，LiveKit 触发事件，前端清理 UI。
 
 MVP 转发策略：
 
-- 摄像头视频转发给同房间其他所有 Peer。
-- 音频转发给同房间其他所有 Peer。
-- 屏幕共享视频转发给同房间其他所有 Peer。
-- 不做订阅优先级。
-- 不做带宽自适应。
+- 摄像头视频转发给同房间其他参与者。
+- 音频转发给同房间其他参与者。
+- 屏幕共享视频转发给同房间其他参与者。
+- 不自定义订阅优先级。
+- 不自定义带宽自适应策略。
 
 ## 10. 屏幕共享
 
@@ -200,21 +162,20 @@ MVP 转发策略：
 
 ```text
 用户点击共享屏幕
-  -> 前端调用 getDisplayMedia
-  -> 添加 screen track 到 PeerConnection
-  -> 发送 screen.share.start
-  -> 服务端注册 screen track
-  -> 广播 peer.screen_share
+  -> 前端调用 LiveKit SDK 开启屏幕共享
+  -> 浏览器弹出屏幕/窗口选择
+  -> LiveKit 发布 ScreenShare Track
+  -> 其他客户端收到 TrackSubscribed 事件
+  -> UI 展示屏幕共享画面
 ```
 
 停止流程：
 
 ```text
 用户点击停止共享或浏览器停止共享
-  -> 前端停止 screen track
-  -> 发送 screen.share.stop
-  -> 服务端清理 screen track
-  -> 广播 peer.screen_share
+  -> LiveKit 取消发布 ScreenShare Track
+  -> 其他客户端收到取消订阅或 Track 更新事件
+  -> UI 恢复普通视频布局
 ```
 
 前端展示规则：
@@ -224,49 +185,42 @@ MVP 转发策略：
 
 ## 11. 媒体控制
 
-静音和关闭摄像头优先在前端本地控制：
+媒体控制使用 LiveKit SDK：
 
-```ts
-track.enabled = false
-```
+- 开启/关闭麦克风。
+- 开启/关闭摄像头。
+- 切换麦克风。
+- 切换摄像头。
+- 开启/关闭屏幕共享。
 
-同时通过 WebSocket 发送 `media.state.update`。服务端更新 Peer 状态并广播 `peer.media_state`。
-
-切换设备流程：
-
-1. 前端枚举设备。
-2. 用户选择新设备。
-3. 前端获取新 Track。
-4. 使用 `RTCRtpSender.replaceTrack` 替换旧 Track。
-5. 必要时更新媒体状态。
+状态变化通过 LiveKit participant 和 Track 事件同步。StreamForge 可在 UI 需要时维护前端状态，不把该状态作为服务端事实来源。
 
 ## 12. 生命周期清理
 
-Peer 离开时必须清理：
+用户离开时：
 
-- WebSocket 连接。
-- PeerConnection。
-- 上行 Track 读取循环。
-- 下行 Track 写入循环。
-- 房间 Peer 列表。
-- Track 发布列表。
-- 媒体状态。
+- 前端调用 LiveKit `room.disconnect()`。
+- 前端关闭 Go WebSocket 聊天连接（如果启用）。
+- 前端停止本地预览和释放 UI 引用。
+- LiveKit 清理媒体连接和 Track。
+- Go 房间服务清理临时业务在线摘要。
 
 房间为空时：
 
-- 删除房间内存对象。
-- 删除或设置 Redis 房间路由过期。
+- LiveKit 房间可以自然释放。
+- StreamForge 业务房间摘要可以删除或设置短 TTL。
 
 ## 13. 错误处理
 
 | 场景 | MVP 行为 |
 |:---|:---|
-| 摄像头权限被拒绝 | 前端提示权限错误，允许只加入聊天 |
+| 摄像头权限被拒绝 | 前端提示权限错误，允许只加入聊天或只听音频 |
 | 麦克风权限被拒绝 | 前端提示权限错误，允许只开视频或只聊天 |
-| 屏幕共享被取消 | 不发送 start，或发送 stop，UI 恢复 |
-| ICE 连接失败 | 前端提示连接失败，允许用户重新加入 |
-| 媒体实例崩溃 | 当前房间中断，MVP 不做迁移 |
-| Redis 不可用 | 新建和加入房间不可用 |
+| 屏幕共享被取消 | 不发布屏幕 Track，UI 恢复 |
+| LiveKit Token 无效 | 前端提示加入失败，允许重新进入房间 |
+| LiveKit 连接失败 | 前端提示连接失败，允许用户重新加入 |
+| LiveKit 服务不可用 | 创建/加入接口返回 `LIVEKIT_UNAVAILABLE` 或前端连接失败 |
+| Redis 不可用 | LiveKit 多节点协调或 StreamForge 运行时摘要可能不可用 |
 
 ## 14. 验收点
 
@@ -275,5 +229,6 @@ Peer 离开时必须清理：
 - 用户静音后，其他用户 UI 能看到静音状态。
 - 用户关闭摄像头后，其他用户 UI 能看到摄像头关闭状态。
 - 用户屏幕共享后，其他用户能看到屏幕共享画面。
-- 媒体服务运行多个副本时，同一房间所有用户连接到同一个媒体实例。
-- Redis 中可以看到 `roomId -> mediaInstanceId` 路由。
+- Go 房间服务不处理 SDP/ICE/Track，只签发 LiveKit Token。
+- 前端使用 `livekit-client` 连接 LiveKit 房间。
+

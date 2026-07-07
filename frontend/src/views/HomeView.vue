@@ -23,10 +23,10 @@ async function create() {
   }
   creating.value = true
   try {
-    const route = await createRoom(authStore.user.userId, authStore.user.username)
-    roomStore.setRoute(route)
+    const connection = await createRoom(authStore.user.userId, authStore.user.username)
+    roomStore.setConnection(connection)
     chatStore.clear()
-    await router.push(`/rooms/${route.roomId}`)
+    await router.push(`/rooms/${connection.roomId}`)
   } catch (error) {
     ElMessage.error(getErrorMessage(error))
   } finally {
@@ -45,10 +45,10 @@ async function join() {
   }
   joining.value = true
   try {
-    const route = await joinRoom(targetRoomId, authStore.user.userId, authStore.user.username)
-    roomStore.setRoute(route)
+    const connection = await joinRoom(targetRoomId, authStore.user.userId, authStore.user.username)
+    roomStore.setConnection(connection)
     chatStore.clear()
-    await router.push(`/rooms/${route.roomId}`)
+    await router.push(`/rooms/${connection.roomId}`)
   } catch (error) {
     ElMessage.error(getErrorMessage(error))
   } finally {
@@ -68,8 +68,8 @@ function logout() {
   <main class="home-page">
     <section class="home-hero">
       <div>
-        <h1>会议操作台</h1>
-        <p>创建房间或输入房间号加入，先验证用户服务、Redis 房间路由和 WebSocket 聊天。</p>
+        <h1>会议控制台</h1>
+        <p>创建业务房间或加入已有房间，由房间服务签发 LiveKit 入会凭证，并保留应用聊天通道。</p>
       </div>
       <el-button :icon="SwitchButton" @click="logout">退出登录</el-button>
     </section>
@@ -77,18 +77,18 @@ function logout() {
     <section class="entry-grid">
       <article class="entry-panel">
         <span class="step-label">创建</span>
-        <h2>开启一个新房间</h2>
-        <p>媒体服务会生成 6 位房间号，并写入 Redis 房间级路由。</p>
+        <h2>发起新房间</h2>
+        <p>房间服务会创建 StreamForge 业务房间，并映射到稳定的 LiveKit 房间名。</p>
         <el-button type="primary" :icon="Plus" :loading="creating" @click="create">创建房间</el-button>
       </article>
 
       <article class="entry-panel">
         <span class="step-label">加入</span>
-        <h2>进入已有房间</h2>
-        <p>加入前会读取 Redis 中已有的 roomId 到 mediaInstanceId 路由。</p>
+        <h2>加入已有房间</h2>
+        <p>加入成功后会获得新的 LiveKit Token，以及可选的应用 WebSocket 聊天地址。</p>
         <div class="join-row">
-          <el-input v-model.trim="roomId" placeholder="输入房间号" @keyup.enter="join" />
-          <el-button type="primary" plain :icon="Right" :loading="joining" @click="join">加入</el-button>
+          <el-input v-model.trim="roomId" placeholder="请输入房间号" @keyup.enter="join" />
+          <el-button type="primary" plain :icon="Right" :loading="joining" @click="join">加入房间</el-button>
         </div>
       </article>
     </section>

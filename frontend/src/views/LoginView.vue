@@ -19,11 +19,11 @@ const form = reactive({
 const rules: FormRules = {
   account: [
     { required: true, message: '请输入账号', trigger: 'blur' },
-    { min: 4, max: 32, message: '账号长度必须为 4-32', trigger: 'blur' },
+    { min: 4, max: 32, message: '账号长度必须为 4-32 位', trigger: 'blur' },
   ],
   password: [
     { required: true, message: '请输入密码', trigger: 'blur' },
-    { min: 6, max: 64, message: '密码长度必须为 6-64', trigger: 'blur' },
+    { min: 6, max: 64, message: '密码长度必须为 6-64 位', trigger: 'blur' },
   ],
 }
 
@@ -48,7 +48,7 @@ async function submit() {
     <section class="auth-panel">
       <div>
         <h1>StreamForge</h1>
-        <p>登录后创建房间、加入会议，并验证 Week 1-2 的信令与聊天链路。</p>
+        <p>登录后可以创建房间、加入会议，并验证 LiveKit 音视频与应用聊天链路。</p>
       </div>
       <el-form ref="formRef" :model="form" :rules="rules" label-position="top" @submit.prevent="submit">
         <el-form-item label="账号" prop="account">

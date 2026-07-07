@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
+	"log"
 	"math/rand"
 	"net/http"
 	"strconv"
@@ -17,14 +17,16 @@ import (
 
 	"streamforge/media-service/internal/chat"
 	"streamforge/media-service/internal/config"
+	livekittoken "streamforge/media-service/internal/livekit"
 	"streamforge/media-service/internal/room"
-	"streamforge/media-service/internal/router"
 	"streamforge/media-service/internal/signaling"
+	"streamforge/media-service/internal/state"
 )
 
 type Server struct {
 	cfg      config.Config
-	store    router.Store
+	store    state.Store
+	issuer   *livekittoken.Issuer
 	hub      *room.Hub
 	upgrader websocket.Upgrader
 }
@@ -35,18 +37,12 @@ type RoomRequest struct {
 }
 
 type RoomResponse struct {
-	RoomID          string    `json:"roomId"`
-	MediaInstanceID string    `json:"mediaInstanceId"`
-	WSURL           string    `json:"wsUrl"`
-	RTCConfig       RTCConfig `json:"rtcConfig"`
-}
-
-type RTCConfig struct {
-	ICEServers []ICEServer `json:"iceServers"`
-}
-
-type ICEServer struct {
-	URLs []string `json:"urls"`
+	RoomID          string `json:"roomId"`
+	LiveKitRoomName string `json:"livekitRoomName"`
+	LiveKitURL      string `json:"livekitUrl"`
+	LiveKitToken    string `json:"livekitToken"`
+	LiveKitIdentity string `json:"livekitIdentity"`
+	AppWSURL        string `json:"appWsUrl"`
 }
 
 type ErrorResponse struct {
@@ -54,11 +50,12 @@ type ErrorResponse struct {
 	Message string `json:"message"`
 }
 
-func NewServer(cfg config.Config, store router.Store, hub *room.Hub) *Server {
+func NewServer(cfg config.Config, store state.Store, issuer *livekittoken.Issuer, hub *room.Hub) *Server {
 	return &Server{
-		cfg:   cfg,
-		store: store,
-		hub:   hub,
+		cfg:    cfg,
+		store:  store,
+		issuer: issuer,
+		hub:    hub,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				return true
@@ -83,11 +80,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	rooms, peers := s.hub.Stats()
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"status":          "UP",
-		"mediaInstanceId": s.cfg.MediaInstanceID,
-		"rooms":           rooms,
-		"peers":           peers,
-		"redis":           "UP",
+		"status":            "UP",
+		"livekitConfigured": s.issuer != nil && s.issuer.Configured(),
+		"rooms":             rooms,
+		"appPeers":          peers,
+		"redis":             "UP",
 	})
 }
 
@@ -102,18 +99,27 @@ func (s *Server) handleRooms(w http.ResponseWriter, r *http.Request) {
 	}
 	roomID, err := s.generateRoomID(r.Context())
 	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, "MEDIA_INSTANCE_UNAVAILABLE", "没有可用媒体实例")
+		writeStateError(w, err)
 		return
 	}
-	route, err := s.store.CreateRoomRoute(r.Context(), roomID, request.UserID)
+	meta := state.RoomMeta{
+		RoomID:          roomID,
+		LiveKitRoomName: livekittoken.RoomName(roomID),
+		CreatedByUserID: request.UserID,
+		CreatedAt:       time.Now(),
+		Status:          "active",
+	}
+	if err := s.store.CreateRoom(r.Context(), meta); err != nil {
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "internal server error")
+		return
+	}
+	s.hub.EnsureRoom(roomID, request.UserID)
+	response, err := s.roomResponse(meta, request)
 	if err != nil {
-		writeRouteError(w, err)
+		writeError(w, http.StatusServiceUnavailable, "LIVEKIT_UNAVAILABLE", "livekit is unavailable")
 		return
 	}
-	if route.MediaInstanceID == s.cfg.MediaInstanceID {
-		s.hub.EnsureRoom(roomID, request.UserID)
-	}
-	writeJSON(w, http.StatusOK, s.roomResponse(route.RoomID, route.MediaInstanceID))
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleRoomAction(w http.ResponseWriter, r *http.Request) {
@@ -123,73 +129,81 @@ func (s *Server) handleRoomAction(w http.ResponseWriter, r *http.Request) {
 	}
 	roomID, ok := parseJoinPath(r.URL.Path)
 	if !ok {
-		writeError(w, http.StatusNotFound, "NOT_FOUND", "接口不存在")
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "not found")
 		return
 	}
-	if _, ok := decodeRoomRequest(w, r); !ok {
+	request, ok := decodeRoomRequest(w, r)
+	if !ok {
 		return
 	}
-	route, err := s.store.GetRoomRoute(r.Context(), roomID)
+	meta, err := s.store.GetRoom(r.Context(), roomID)
 	if err != nil {
-		writeRouteError(w, err)
+		writeStateError(w, err)
 		return
 	}
-	if route.MediaInstanceID == s.cfg.MediaInstanceID {
-		s.hub.EnsureRoom(roomID, 0)
+	s.hub.EnsureRoom(roomID, 0)
+	response, err := s.roomResponse(meta, request)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "LIVEKIT_UNAVAILABLE", "livekit is unavailable")
+		return
 	}
-	writeJSON(w, http.StatusOK, s.roomResponse(route.RoomID, route.MediaInstanceID))
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	roomID := strings.TrimPrefix(r.URL.Path, "/ws/rooms/")
 	if roomID == "" {
-		writeError(w, http.StatusNotFound, "ROOM_NOT_FOUND", "房间不存在")
+		writeError(w, http.StatusNotFound, "ROOM_NOT_FOUND", "room not found")
 		return
 	}
-	route, err := s.store.GetRoomRoute(r.Context(), roomID)
+	meta, err := s.store.GetRoom(r.Context(), roomID)
 	if err != nil {
-		writeRouteError(w, err)
+		writeStateError(w, err)
 		return
 	}
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
-	session := &wsSession{
-		server: s,
-		conn:   conn,
-		roomID: roomID,
-		route:  route,
-	}
+	session := &wsSession{server: s, conn: conn, roomID: roomID, meta: meta}
 	session.run(r.Context())
 }
 
-func (s *Server) roomResponse(roomID string, mediaInstanceID string) RoomResponse {
-	return RoomResponse{
-		RoomID:          roomID,
-		MediaInstanceID: mediaInstanceID,
-		WSURL:           strings.TrimRight(s.cfg.PublicWSBaseURL, "/") + "/ws/rooms/" + roomID,
-		RTCConfig: RTCConfig{ICEServers: []ICEServer{{
-			URLs: s.cfg.ICEStunURLs,
-		}}},
+func (s *Server) roomResponse(meta state.RoomMeta, request RoomRequest) (RoomResponse, error) {
+	issued, err := s.issuer.Issue(livekittoken.TokenRequest{
+		RoomID:   meta.RoomID,
+		RoomName: meta.LiveKitRoomName,
+		UserID:   request.UserID,
+		Username: request.Username,
+	})
+	if err != nil {
+		return RoomResponse{}, err
 	}
+	return RoomResponse{
+		RoomID:          meta.RoomID,
+		LiveKitRoomName: meta.LiveKitRoomName,
+		LiveKitURL:      issued.URL,
+		LiveKitToken:    issued.Token,
+		LiveKitIdentity: issued.Identity,
+		AppWSURL:        strings.TrimRight(s.cfg.PublicWSBaseURL, "/") + "/ws/rooms/" + meta.RoomID,
+	}, nil
 }
 
 func (s *Server) generateRoomID(ctx context.Context) (string, error) {
 	for i := 0; i < 10; i++ {
 		roomID := strconv.Itoa(100000 + rand.Intn(900000))
-		if _, err := s.store.GetRoomRoute(ctx, roomID); errors.Is(err, router.ErrRoomNotFound) {
+		if _, err := s.store.GetRoom(ctx, roomID); errors.Is(err, state.ErrRoomNotFound) {
 			return roomID, nil
 		}
 	}
-	return "", router.ErrMediaInstanceUnavailable
+	return "", errors.New("generate room id failed")
 }
 
 type wsSession struct {
 	server *Server
 	conn   *websocket.Conn
 	roomID string
-	route  router.RoomRoute
+	meta   state.RoomMeta
 	peer   *room.Peer
 	mu     sync.Mutex
 }
@@ -203,7 +217,7 @@ func (s *wsSession) run(ctx context.Context) {
 		}
 		message, err := signaling.Decode(data)
 		if err != nil {
-			s.sendError("", "BAD_REQUEST", "请求格式错误")
+			s.sendError("", "BAD_REQUEST", "bad request")
 			continue
 		}
 		s.handle(ctx, message)
@@ -226,49 +240,49 @@ func (s *wsSession) handle(ctx context.Context, message signaling.Message) {
 			PeerID:    s.peerID(),
 			UserID:    message.UserID,
 			Username:  message.Username,
-			Timestamp: time.Now().UnixMilli(),
+			Timestamp: unixMillis(time.Now()),
 			Payload:   signaling.Payload(map[string]string{}),
 		})
 	default:
-		s.sendError(message.RequestID, "BAD_REQUEST", "不支持的消息类型")
+		s.sendError(message.RequestID, "BAD_REQUEST", "unsupported message type")
 	}
 }
 
 func (s *wsSession) handleJoin(message signaling.Message) {
-	if s.route.MediaInstanceID != s.server.cfg.MediaInstanceID {
-		s.sendError(message.RequestID, "ROOM_NOT_ON_INSTANCE", "当前连接的媒体实例不是该房间所属实例")
-		return
-	}
 	if message.RoomID != "" && message.RoomID != s.roomID {
-		s.sendError(message.RequestID, "BAD_REQUEST", "房间号不匹配")
+		s.sendError(message.RequestID, "BAD_REQUEST", "room id mismatch")
 		return
 	}
+	var payload struct {
+		LiveKitIdentity string `json:"livekitIdentity"`
+	}
+	_ = json.Unmarshal(message.Payload, &payload)
 	roomState := s.server.hub.EnsureRoom(s.roomID, message.UserID)
-	peer := room.NewPeer("peer-"+uuid.NewString()[:8], message.UserID, message.Username)
-	peer.SetSender(func(value interface{}) {
-		s.send(value)
-	})
+	peer := room.NewPeer("app-peer-"+uuid.NewString()[:8], message.UserID, message.Username, payload.LiveKitIdentity)
+	peer.SetSender(func(value interface{}) { s.send(value) })
 	s.peer = peer
 	roomState.AddPeer(peer)
 
-	joined := signaling.Message{
+	s.send(signaling.Message{
 		Type:      signaling.TypeRoomJoined,
 		RequestID: message.RequestID,
 		RoomID:    s.roomID,
 		PeerID:    peer.PeerID,
 		UserID:    peer.UserID,
 		Username:  peer.Username,
-		Timestamp: time.Now().UnixMilli(),
-		Payload:   signaling.Payload(map[string]string{"mediaInstanceId": s.server.cfg.MediaInstanceID}),
-	}
-	s.send(joined)
+		Timestamp: unixMillis(time.Now()),
+		Payload: signaling.Payload(map[string]string{
+			"livekitRoomName": s.meta.LiveKitRoomName,
+			"livekitIdentity": peer.LiveKitIdentity,
+		}),
+	})
 	s.send(signaling.Message{
 		Type:      signaling.TypeRoomSnapshot,
 		RoomID:    s.roomID,
 		PeerID:    peer.PeerID,
 		UserID:    peer.UserID,
 		Username:  peer.Username,
-		Timestamp: time.Now().UnixMilli(),
+		Timestamp: unixMillis(time.Now()),
 		Payload:   signaling.Payload(roomState.Snapshot()),
 	})
 	roomState.BroadcastExcept(peer.PeerID, signaling.Message{
@@ -277,34 +291,34 @@ func (s *wsSession) handleJoin(message signaling.Message) {
 		PeerID:    peer.PeerID,
 		UserID:    peer.UserID,
 		Username:  peer.Username,
-		Timestamp: time.Now().UnixMilli(),
+		Timestamp: unixMillis(time.Now()),
 		Payload:   signaling.Payload(peer.State()),
 	})
 }
 
 func (s *wsSession) handleChat(message signaling.Message) {
 	if s.peer == nil {
-		s.sendError(message.RequestID, "PEER_NOT_JOINED", "Peer 尚未加入房间")
+		s.sendError(message.RequestID, "PEER_NOT_JOINED", "peer is not joined")
 		return
 	}
 	var payload struct {
 		Content string `json:"content"`
 	}
 	if err := json.Unmarshal(message.Payload, &payload); err != nil {
-		s.sendError(message.RequestID, "BAD_REQUEST", "请求格式错误")
+		s.sendError(message.RequestID, "BAD_REQUEST", "bad request")
 		return
 	}
 	content, err := chat.ValidateContent(payload.Content)
 	if err != nil {
-		s.sendError(message.RequestID, "MESSAGE_TOO_LONG", "聊天消息不能为空且不能超过1000字符")
+		s.sendError(message.RequestID, "MESSAGE_TOO_LONG", "chat message is empty or too long")
 		return
 	}
 	roomState, ok := s.server.hub.GetRoom(s.roomID)
 	if !ok {
-		s.sendError(message.RequestID, "ROOM_NOT_FOUND", "房间不存在")
+		s.sendError(message.RequestID, "ROOM_NOT_FOUND", "room not found")
 		return
 	}
-	now := time.Now().UnixMilli()
+	now := unixMillis(time.Now())
 	roomState.Broadcast(signaling.Message{
 		Type:      signaling.TypeChatMessage,
 		RoomID:    s.roomID,
@@ -330,13 +344,13 @@ func (s *wsSession) close(ctx context.Context) {
 					PeerID:    peer.PeerID,
 					UserID:    peer.UserID,
 					Username:  peer.Username,
-					Timestamp: time.Now().UnixMilli(),
+					Timestamp: unixMillis(time.Now()),
 					Payload:   signaling.Payload(peer.State()),
 				})
 			}
 			if remaining == 0 {
 				s.server.hub.DeleteRoom(s.roomID)
-				_ = s.server.store.DeleteRoomRoute(ctx, s.roomID)
+				_ = s.server.store.DeleteRoom(ctx, s.roomID)
 			}
 		}
 		s.peer = nil
@@ -348,7 +362,7 @@ func (s *wsSession) send(value interface{}) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.conn.WriteJSON(value); err != nil {
-		slog.Debug("failed to write websocket message", "error", err)
+		log.Printf("failed to write websocket message: %v", err)
 	}
 }
 
@@ -358,7 +372,7 @@ func (s *wsSession) sendError(requestID string, code string, message string) {
 		RequestID: requestID,
 		RoomID:    s.roomID,
 		PeerID:    s.peerID(),
-		Timestamp: time.Now().UnixMilli(),
+		Timestamp: unixMillis(time.Now()),
 		Payload:   signaling.Payload(ErrorResponse{Code: code, Message: message}),
 	})
 }
@@ -373,12 +387,12 @@ func (s *wsSession) peerID() string {
 func decodeRoomRequest(w http.ResponseWriter, r *http.Request) (RoomRequest, bool) {
 	var request RoomRequest
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "请求格式错误")
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "bad request")
 		return RoomRequest{}, false
 	}
 	request.Username = strings.TrimSpace(request.Username)
 	if request.UserID <= 0 || request.Username == "" || len([]rune(request.Username)) > 32 {
-		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "用户信息不完整")
+		writeError(w, http.StatusBadRequest, "BAD_REQUEST", "incomplete user info")
 		return RoomRequest{}, false
 	}
 	return request, true
@@ -393,14 +407,12 @@ func parseJoinPath(path string) (string, bool) {
 	return roomID, roomID != ""
 }
 
-func writeRouteError(w http.ResponseWriter, err error) {
+func writeStateError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, router.ErrRoomNotFound):
-		writeError(w, http.StatusNotFound, "ROOM_NOT_FOUND", "房间不存在")
-	case errors.Is(err, router.ErrMediaInstanceUnavailable):
-		writeError(w, http.StatusServiceUnavailable, "MEDIA_INSTANCE_UNAVAILABLE", "房间所属媒体实例不可用")
+	case errors.Is(err, state.ErrRoomNotFound):
+		writeError(w, http.StatusNotFound, "ROOM_NOT_FOUND", "room not found")
 	default:
-		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "服务端内部错误")
+		writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "internal server error")
 	}
 }
 
@@ -425,4 +437,8 @@ func withCORS(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func unixMillis(value time.Time) int64 {
+	return value.UnixNano() / int64(time.Millisecond)
 }

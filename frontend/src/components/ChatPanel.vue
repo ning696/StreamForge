@@ -40,7 +40,7 @@ function formatTime(timestamp: number) {
   <section class="chat-panel">
     <header class="panel-title">房间聊天</header>
     <div class="messages">
-      <p v-if="chatStore.messages.length === 0" class="empty">还没有消息，发送第一句问候。</p>
+      <p v-if="chatStore.messages.length === 0" class="empty">还没有消息，发送第一句问候吧。</p>
       <article v-for="message in chatStore.messages" :key="message.messageId" class="message">
         <div class="message-meta">
           <strong>{{ message.username }}</strong>

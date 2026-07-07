@@ -6,12 +6,13 @@ import (
 )
 
 type PeerState struct {
-	PeerID        string `json:"peerId"`
-	UserID        int64  `json:"userId"`
-	Username      string `json:"username"`
-	AudioEnabled  bool   `json:"audioEnabled"`
-	VideoEnabled  bool   `json:"videoEnabled"`
-	ScreenSharing bool   `json:"screenSharing"`
+	PeerID          string `json:"peerId"`
+	UserID          int64  `json:"userId"`
+	Username        string `json:"username"`
+	LiveKitIdentity string `json:"livekitIdentity,omitempty"`
+	AudioEnabled    bool   `json:"audioEnabled"`
+	VideoEnabled    bool   `json:"videoEnabled"`
+	ScreenSharing   bool   `json:"screenSharing"`
 }
 
 type Snapshot struct {
@@ -29,26 +30,28 @@ type ChatMessage struct {
 }
 
 type Peer struct {
-	mu            sync.Mutex
-	PeerID        string
-	UserID        int64
-	Username      string
-	AudioEnabled  bool
-	VideoEnabled  bool
-	ScreenSharing bool
-	JoinedAt      time.Time
-	send          func(interface{})
-	outbox        []interface{}
+	mu              sync.Mutex
+	PeerID          string
+	UserID          int64
+	Username        string
+	LiveKitIdentity string
+	AudioEnabled    bool
+	VideoEnabled    bool
+	ScreenSharing   bool
+	JoinedAt        time.Time
+	send            func(interface{})
+	outbox          []interface{}
 }
 
-func NewPeer(peerID string, userID int64, username string) *Peer {
+func NewPeer(peerID string, userID int64, username string, livekitIdentity string) *Peer {
 	return &Peer{
-		PeerID:       peerID,
-		UserID:       userID,
-		Username:     username,
-		AudioEnabled: true,
-		VideoEnabled: true,
-		JoinedAt:     time.Now(),
+		PeerID:          peerID,
+		UserID:          userID,
+		Username:        username,
+		LiveKitIdentity: livekitIdentity,
+		AudioEnabled:    true,
+		VideoEnabled:    true,
+		JoinedAt:        time.Now(),
 	}
 }
 
@@ -76,28 +79,27 @@ func (p *Peer) Outbox() []interface{} {
 
 func (p *Peer) State() PeerState {
 	return PeerState{
-		PeerID:        p.PeerID,
-		UserID:        p.UserID,
-		Username:      p.Username,
-		AudioEnabled:  p.AudioEnabled,
-		VideoEnabled:  p.VideoEnabled,
-		ScreenSharing: p.ScreenSharing,
+		PeerID:          p.PeerID,
+		UserID:          p.UserID,
+		Username:        p.Username,
+		LiveKitIdentity: p.LiveKitIdentity,
+		AudioEnabled:    p.AudioEnabled,
+		VideoEnabled:    p.VideoEnabled,
+		ScreenSharing:   p.ScreenSharing,
 	}
 }
 
 type Room struct {
 	mu              sync.Mutex
 	RoomID          string
-	MediaInstanceID string
 	CreatedByUserID int64
 	CreatedAt       time.Time
 	peers           map[string]*Peer
 }
 
-func NewRoom(roomID string, mediaInstanceID string, createdByUserID int64) *Room {
+func NewRoom(roomID string, createdByUserID int64) *Room {
 	return &Room{
 		RoomID:          roomID,
-		MediaInstanceID: mediaInstanceID,
 		CreatedByUserID: createdByUserID,
 		CreatedAt:       time.Now(),
 		peers:           make(map[string]*Peer),
@@ -159,16 +161,12 @@ func (r *Room) BroadcastExcept(peerID string, message interface{}) {
 }
 
 type Hub struct {
-	mu              sync.Mutex
-	mediaInstanceID string
-	rooms           map[string]*Room
+	mu    sync.Mutex
+	rooms map[string]*Room
 }
 
-func NewHub(mediaInstanceID string) *Hub {
-	return &Hub{
-		mediaInstanceID: mediaInstanceID,
-		rooms:           make(map[string]*Room),
-	}
+func NewHub() *Hub {
+	return &Hub{rooms: make(map[string]*Room)}
 }
 
 func (h *Hub) EnsureRoom(roomID string, createdByUserID int64) *Room {
@@ -177,7 +175,7 @@ func (h *Hub) EnsureRoom(roomID string, createdByUserID int64) *Room {
 	if existing, ok := h.rooms[roomID]; ok {
 		return existing
 	}
-	created := NewRoom(roomID, h.mediaInstanceID, createdByUserID)
+	created := NewRoom(roomID, createdByUserID)
 	h.rooms[roomID] = created
 	return created
 }

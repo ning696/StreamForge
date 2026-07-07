@@ -19,15 +19,15 @@ const form = reactive({
 const rules: FormRules = {
   account: [
     { required: true, message: '请输入账号', trigger: 'blur' },
-    { min: 4, max: 32, message: '账号长度必须为 4-32', trigger: 'blur' },
+    { min: 4, max: 32, message: '账号长度必须为 4-32 位', trigger: 'blur' },
   ],
   password: [
     { required: true, message: '请输入密码', trigger: 'blur' },
-    { min: 6, max: 64, message: '密码长度必须为 6-64', trigger: 'blur' },
+    { min: 6, max: 64, message: '密码长度必须为 6-64 位', trigger: 'blur' },
   ],
   username: [
     { required: true, message: '请输入用户名', trigger: 'blur' },
-    { min: 1, max: 32, message: '用户名长度必须为 1-32', trigger: 'blur' },
+    { min: 1, max: 32, message: '用户名长度必须为 1-32 位', trigger: 'blur' },
   ],
 }
 
@@ -51,7 +51,7 @@ async function submit() {
     <section class="auth-panel">
       <div>
         <h1>创建账号</h1>
-        <p>MVP 只保存账号、密码哈希和用户名，不引入 JWT、Session 或 OAuth2。</p>
+        <p>MVP 只保存账号、密码哈希和用户名，暂不引入 JWT、Session 或 OAuth2。</p>
       </div>
       <el-form ref="formRef" :model="form" :rules="rules" label-position="top" @submit.prevent="submit">
         <el-form-item label="账号" prop="account">

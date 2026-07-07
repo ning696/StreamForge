@@ -1,20 +1,26 @@
 import { defineStore } from 'pinia'
-import type { PeerState, RoomRoute } from '@/types'
+import type { PeerState, RoomConnectionInfo } from '@/types'
 
 export const useRoomStore = defineStore('room', {
   state: () => ({
     roomId: '',
-    mediaInstanceId: '',
-    wsUrl: '',
+    livekitRoomName: '',
+    livekitUrl: '',
+    livekitToken: '',
+    livekitIdentity: '',
+    appWsUrl: '',
     peerId: '',
     joined: false,
     peers: [] as PeerState[],
   }),
   actions: {
-    setRoute(route: RoomRoute) {
-      this.roomId = route.roomId
-      this.mediaInstanceId = route.mediaInstanceId
-      this.wsUrl = route.wsUrl
+    setConnection(info: RoomConnectionInfo) {
+      this.roomId = info.roomId
+      this.livekitRoomName = info.livekitRoomName
+      this.livekitUrl = info.livekitUrl
+      this.livekitToken = info.livekitToken
+      this.livekitIdentity = info.livekitIdentity
+      this.appWsUrl = info.appWsUrl
     },
     setJoined(peerId: string) {
       this.peerId = peerId
@@ -36,8 +42,11 @@ export const useRoomStore = defineStore('room', {
     },
     clear() {
       this.roomId = ''
-      this.mediaInstanceId = ''
-      this.wsUrl = ''
+      this.livekitRoomName = ''
+      this.livekitUrl = ''
+      this.livekitToken = ''
+      this.livekitIdentity = ''
+      this.appWsUrl = ''
       this.peerId = ''
       this.joined = false
       this.peers = []

@@ -10,19 +10,24 @@ export class SignalingClient {
   constructor(
     private readonly roomId: string,
     private readonly user: UserSession,
+    private readonly livekitIdentity: string,
     private readonly onMessage: MessageHandler,
     private readonly onStatus: StatusHandler,
   ) {}
 
-  connect(wsUrl: string) {
+  connect(appWsUrl: string) {
     this.onStatus('connecting')
-    const url = new URL(wsUrl)
+    const url = new URL(appWsUrl)
     url.searchParams.set('userId', String(this.user.userId))
     url.searchParams.set('username', this.user.username)
     this.socket = new WebSocket(url.toString())
     this.socket.onopen = () => {
       this.onStatus('connected')
-      this.send('room.join', { clientType: 'web', displayName: this.user.username })
+      this.send('room.join', {
+        clientType: 'web',
+        displayName: this.user.username,
+        livekitIdentity: this.livekitIdentity,
+      })
       this.pingTimer = window.setInterval(() => {
         this.send('ping', {})
       }, 20000)

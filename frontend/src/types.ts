@@ -4,23 +4,20 @@ export interface UserSession {
   username: string
 }
 
-export interface IceServer {
-  urls: string[]
-}
-
-export interface RoomRoute {
+export interface RoomConnectionInfo {
   roomId: string
-  mediaInstanceId: string
-  wsUrl: string
-  rtcConfig: {
-    iceServers: IceServer[]
-  }
+  livekitRoomName: string
+  livekitUrl: string
+  livekitToken: string
+  livekitIdentity: string
+  appWsUrl: string
 }
 
 export interface PeerState {
   peerId: string
   userId: number
   username: string
+  livekitIdentity?: string
   audioEnabled: boolean
   videoEnabled: boolean
   screenSharing: boolean

@@ -12,9 +12,9 @@ import (
 
 	"streamforge/media-service/internal/config"
 	"streamforge/media-service/internal/gateway"
-	"streamforge/media-service/internal/instance"
+	livekittoken "streamforge/media-service/internal/livekit"
 	"streamforge/media-service/internal/room"
-	"streamforge/media-service/internal/router"
+	"streamforge/media-service/internal/state"
 )
 
 func main() {
@@ -22,13 +22,10 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	redisClient := router.NewRedisClient(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
-	store := router.NewRedisStore(redisClient)
-	hub := room.NewHub(cfg.MediaInstanceID)
-	registrar := instance.NewRegistrar(cfg, store, hub.Stats)
-	registrar.Start(ctx, 10*time.Second)
-
-	server := gateway.NewServer(cfg, store, hub)
+	redisClient := state.NewRedisClient(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
+	store := state.NewRedisStore(redisClient)
+	issuer := livekittoken.NewIssuer(livekittoken.FromConfig(cfg))
+	server := gateway.NewServer(cfg, store, issuer, room.NewHub())
 	httpServer := &http.Server{
 		Addr:              ":" + strconv.Itoa(cfg.ServerPort),
 		Handler:           server.Handler(),
@@ -42,7 +39,7 @@ func main() {
 		_ = httpServer.Shutdown(shutdownCtx)
 	}()
 
-	log.Printf("media-service %s listening on :%d", cfg.MediaInstanceID, cfg.ServerPort)
+	log.Printf("media-service room/token service listening on :%d", cfg.ServerPort)
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}

@@ -5,50 +5,40 @@ import (
 	"os"
 	"strconv"
 	"strings"
-
-	"github.com/google/uuid"
+	"time"
 )
 
 type Config struct {
-	MediaInstanceID string
-	ServerPort      int
-	PublicHTTPHost  string
-	PublicWSBaseURL string
-	RedisAddr       string
-	RedisPassword   string
-	RedisDB         int
-	RTCPortRange    string
-	ICEStunURLs     []string
+	ServerPort       int
+	PublicWSBaseURL  string
+	RedisAddr        string
+	RedisPassword    string
+	RedisDB          int
+	LiveKitURL       string
+	LiveKitAPIKey    string
+	LiveKitAPISecret string
+	LiveKitTokenTTL  time.Duration
 }
 
 func Load() Config {
 	_ = loadDotEnv(".env")
 
 	serverPort := envInt("SERVER_PORT", 8080)
-	instanceID := strings.TrimSpace(os.Getenv("MEDIA_INSTANCE_ID"))
-	if instanceID == "" {
-		if hostname, err := os.Hostname(); err == nil && strings.TrimSpace(hostname) != "" {
-			instanceID = hostname
-		} else {
-			instanceID = "media-" + uuid.NewString()
-		}
-	}
-
 	publicWSHost := env("PUBLIC_WS_HOST", "localhost")
 	publicWSBaseURL := env("PUBLIC_WS_BASE_URL", "ws://"+publicWSHost+":"+strconv.Itoa(serverPort))
 	redisHost := env("REDIS_HOST", "localhost")
 	redisPort := envInt("REDIS_PORT", 6379)
 
 	return Config{
-		MediaInstanceID: instanceID,
-		ServerPort:      serverPort,
-		PublicHTTPHost:  env("PUBLIC_HTTP_HOST", "localhost"),
-		PublicWSBaseURL: publicWSBaseURL,
-		RedisAddr:       redisHost + ":" + strconv.Itoa(redisPort),
-		RedisPassword:   os.Getenv("REDIS_PASSWORD"),
-		RedisDB:         envInt("REDIS_DB", 0),
-		RTCPortRange:    env("RTC_UDP_PORT_MIN", "30000") + "-" + env("RTC_UDP_PORT_MAX", "30100"),
-		ICEStunURLs:     splitCSV(env("ICE_STUN_URLS", "stun:stun.l.google.com:19302")),
+		ServerPort:       serverPort,
+		PublicWSBaseURL:  publicWSBaseURL,
+		RedisAddr:        redisHost + ":" + strconv.Itoa(redisPort),
+		RedisPassword:    os.Getenv("REDIS_PASSWORD"),
+		RedisDB:          envInt("REDIS_DB", 0),
+		LiveKitURL:       env("LIVEKIT_URL", "ws://localhost:7880"),
+		LiveKitAPIKey:    env("LIVEKIT_API_KEY", "devkey"),
+		LiveKitAPISecret: env("LIVEKIT_API_SECRET", "secret"),
+		LiveKitTokenTTL:  time.Duration(envInt("LIVEKIT_TOKEN_TTL_SECONDS", 86400)) * time.Second,
 	}
 }
 
@@ -65,12 +55,12 @@ func loadDotEnv(path string) error {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		key, value, ok := strings.Cut(line, "=")
-		if !ok {
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
 			continue
 		}
-		key = strings.TrimSpace(key)
-		value = strings.TrimSpace(value)
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
 		value = strings.Trim(value, `"'`)
 		if key == "" {
 			continue
@@ -101,16 +91,4 @@ func envInt(key string, fallback int) int {
 		return fallback
 	}
 	return parsed
-}
-
-func splitCSV(value string) []string {
-	parts := strings.Split(value, ",")
-	result := make([]string, 0, len(parts))
-	for _, part := range parts {
-		trimmed := strings.TrimSpace(part)
-		if trimmed != "" {
-			result = append(result, trimmed)
-		}
-	}
-	return result
 }

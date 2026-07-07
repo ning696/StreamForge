@@ -2,21 +2,18 @@
 
 ## 1. 协议目标
 
-信令协议负责房间内实时控制消息，不承载媒体流。媒体流通过 WebRTC 传输，信令通过 WebSocket 传输。
+`livekit-standalone-cluster` 分支中，StreamForge 的 WebSocket 不再承载 WebRTC 底层信令。SDP Offer/Answer、ICE Candidate、Track 发布订阅和媒体状态由 LiveKit SDK 与 LiveKit Server 处理。
 
-协议覆盖：
+本文档覆盖 StreamForge 自有实时业务消息：
 
-- 房间加入和离开。
-- 参与者上线和下线通知。
-- WebRTC Offer / Answer / ICE Candidate 交换。
-- 聊天消息。
-- 媒体状态变化。
-- 屏幕共享状态变化。
-- 房间快照和错误响应。
+- 房间业务连接。
+- 房间内文字聊天。
+- 可选在线状态摘要。
+- 错误响应。
+
+LiveKit 连接信息通过 REST 创建/加入房间接口返回，前端随后使用 `livekit-client` 直接连接 LiveKit。
 
 ## 2. REST 前置入口
-
-MVP 中，WebSocket 连接前先通过 REST 获取房间路由和连接信息。
 
 ### 2.1 创建房间
 
@@ -39,24 +36,21 @@ Content-Type: application/json
 ```json
 {
   "roomId": "839204",
-  "mediaInstanceId": "media-001",
-  "wsUrl": "wss://example.com/ws/rooms/839204",
-  "rtcConfig": {
-    "iceServers": [
-      {
-        "urls": ["stun:stun.l.google.com:19302"]
-      }
-    ]
-  }
+  "livekitRoomName": "streamforge-839204",
+  "livekitUrl": "ws://localhost:7880",
+  "livekitToken": "eyJhbGciOi...",
+  "livekitIdentity": "user-1-a1b2c3d4",
+  "appWsUrl": "ws://localhost:8080/ws/rooms/839204"
 }
 ```
 
 行为：
 
-- 服务端生成 `roomId`。
-- 服务端选择健康媒体实例。
-- 服务端写入 Redis 房间路由。
-- 房间创建成功后，返回目标媒体实例连接信息。
+- Go 房间服务生成 `roomId`。
+- Go 房间服务生成或记录 `livekitRoomName`。
+- Go 房间服务保存可过期业务房间摘要。
+- Go 房间服务为创建者签发 LiveKit Token。
+- 返回 LiveKit 连接信息和可选 StreamForge WebSocket 地址。
 
 ### 2.2 加入房间
 
@@ -79,47 +73,59 @@ Content-Type: application/json
 ```json
 {
   "roomId": "839204",
-  "mediaInstanceId": "media-001",
-  "wsUrl": "wss://example.com/ws/rooms/839204",
-  "rtcConfig": {
-    "iceServers": [
-      {
-        "urls": ["stun:stun.l.google.com:19302"]
-      }
-    ]
-  }
+  "livekitRoomName": "streamforge-839204",
+  "livekitUrl": "ws://localhost:7880",
+  "livekitToken": "eyJhbGciOi...",
+  "livekitIdentity": "user-1-a1b2c3d4",
+  "appWsUrl": "ws://localhost:8080/ws/rooms/839204"
 }
 ```
 
 行为：
 
-- 服务端根据 `roomId` 查询 Redis 路由。
-- 路由不存在时返回 `ROOM_NOT_FOUND`。
-- 媒体实例不健康时返回 `MEDIA_INSTANCE_UNAVAILABLE`。
-- 加入成功后，用户仍需要通过 WebSocket 发送 `room.join` 完成实时连接注册。
+- 服务端根据 `roomId` 查询业务房间摘要。
+- 房间不存在时返回 `ROOM_NOT_FOUND`。
+- LiveKit 配置不可用或 Token 签发失败时返回 `LIVEKIT_UNAVAILABLE`。
+- 加入成功后，前端使用 `livekitUrl + livekitToken` 连接 LiveKit。
+- 如果使用 Go WebSocket 聊天，前端再连接 `appWsUrl` 并发送 `room.join`。
 
-## 3. WebSocket 连接
+## 3. LiveKit 连接
 
-连接地址：
+前端不通过 StreamForge WebSocket 交换 WebRTC 信令。连接流程：
+
+```text
+REST create/join
+  -> 获得 livekitUrl、livekitToken 和 livekitIdentity
+  -> new Room()
+  -> room.connect(livekitUrl, livekitToken)
+  -> enableCameraAndMicrophone()
+  -> 监听 LiveKit TrackSubscribed / ParticipantConnected 等事件
+```
+
+LiveKit Token 由后端签发，前端不得保存或暴露 `LIVEKIT_API_SECRET`。
+
+## 4. StreamForge WebSocket 连接
+
+如果启用 Go WebSocket 聊天，连接地址：
 
 ```text
 GET /ws/rooms/{roomId}?userId={userId}&username={username}
 ```
 
-MVP 暂不使用 Token。服务端从查询参数和后续 `room.join` 消息中读取用户基本信息。
+MVP 暂不使用 StreamForge Token。服务端从查询参数和后续 `room.join` 消息中读取用户基本信息。
 
-连接建立后，客户端必须先发送 `room.join`。服务端在收到 `room.join` 前不处理 WebRTC 协商消息。
+连接建立后，客户端应先发送 `room.join`，服务端在收到 `room.join` 前只处理 `ping` 和错误响应。
 
-## 4. 统一消息结构
+## 5. 统一消息结构
 
-所有 WebSocket 消息使用 JSON。
+所有 StreamForge WebSocket 消息使用 JSON。
 
 ```json
 {
-  "type": "room.join",
+  "type": "chat.send",
   "requestId": "req-001",
   "roomId": "839204",
-  "peerId": "peer-abc",
+  "peerId": "app-peer-abc",
   "userId": 1,
   "username": "演示用户",
   "timestamp": 1783072800000,
@@ -133,44 +139,42 @@ MVP 暂不使用 Token。服务端从查询参数和后续 `room.join` 消息中
 |:---|:---:|:---|
 | `type` | 是 | 消息类型 |
 | `requestId` | 客户端请求是 | 客户端生成的请求 ID，用于匹配响应 |
-| `roomId` | 是 | 房间 ID |
-| `peerId` | 加入后是 | 参与者在房间内的连接 ID |
+| `roomId` | 是 | StreamForge 业务房间 ID |
+| `peerId` | 加入后是 | StreamForge WebSocket 连接 ID，不等于 LiveKit participant identity |
 | `userId` | 是 | 用户 ID |
 | `username` | 是 | 用户名 |
 | `timestamp` | 服务端消息是 | 毫秒时间戳 |
 | `payload` | 是 | 消息载荷 |
 
-服务端广播消息可以没有 `requestId`。
-
-## 5. 消息类型总览
+## 6. 消息类型总览
 
 | 类型 | 方向 | 说明 |
 |:---|:---|:---|
-| `room.join` | Client -> Server | 客户端加入房间实时连接 |
-| `room.joined` | Server -> Client | 加入成功响应 |
-| `room.snapshot` | Server -> Client | 房间当前成员和状态快照 |
-| `room.leave` | Client -> Server | 客户端主动离开房间 |
-| `peer.joined` | Server -> Client | 有参与者加入 |
-| `peer.left` | Server -> Client | 有参与者离开 |
+| `room.join` | Client -> Server | 客户端加入 StreamForge 业务实时通道 |
+| `room.joined` | Server -> Client | 加入业务通道成功响应 |
+| `room.snapshot` | Server -> Client | StreamForge 业务成员摘要；媒体成员以 LiveKit 为准 |
+| `room.leave` | Client -> Server | 客户端主动离开业务通道 |
+| `peer.joined` | Server -> Client | 有参与者加入业务通道 |
+| `peer.left` | Server -> Client | 有参与者离开业务通道 |
 | `chat.send` | Client -> Server | 发送聊天消息 |
 | `chat.message` | Server -> Client | 广播聊天消息 |
-| `webrtc.offer` | Client -> Server | 客户端发送 SDP Offer |
-| `webrtc.answer` | Server -> Client | 服务端返回 SDP Answer |
-| `webrtc.ice_candidate` | 双向 | ICE Candidate 交换 |
-| `media.state.update` | Client -> Server | 当前用户媒体状态变化 |
-| `peer.media_state` | Server -> Client | 广播参与者媒体状态 |
-| `screen.share.start` | Client -> Server | 当前用户开始屏幕共享 |
-| `screen.share.stop` | Client -> Server | 当前用户停止屏幕共享 |
-| `peer.screen_share` | Server -> Client | 广播屏幕共享状态 |
 | `ping` | Client -> Server | 客户端心跳 |
 | `pong` | Server -> Client | 服务端心跳响应 |
 | `error` | Server -> Client | 错误响应 |
 
-## 6. 房间消息
+以下旧消息类型在 LiveKit 独立集群方案中废弃：
 
-### 6.1 `room.join`
+| 旧类型 | 新处理方式 |
+|:---|:---|
+| `webrtc.offer` | 由 LiveKit SDK 和 LiveKit Server 内部处理 |
+| `webrtc.answer` | 由 LiveKit SDK 和 LiveKit Server 内部处理 |
+| `webrtc.ice_candidate` | 由 LiveKit SDK 和 LiveKit Server 内部处理 |
+| `media.state.update` | 优先由 LiveKit participant/track 事件处理 |
+| `screen.share.start` / `screen.share.stop` | 优先由 LiveKit screen share Track 事件处理 |
 
-客户端加入房间实时连接。
+## 7. 房间业务消息
+
+### 7.1 `room.join`
 
 ```json
 {
@@ -181,88 +185,85 @@ MVP 暂不使用 Token。服务端从查询参数和后续 `room.join` 消息中
   "username": "演示用户",
   "payload": {
     "clientType": "web",
-    "displayName": "演示用户"
+    "displayName": "演示用户",
+    "livekitIdentity": "user-1"
   }
 }
 ```
 
 服务端行为：
 
-- 校验房间是否在当前媒体实例。
-- 生成 `peerId`。
-- 建立 Peer 内存对象。
+- 校验业务房间是否存在。
+- 生成 StreamForge WebSocket `peerId`。
+- 建立临时业务 Peer 对象。
 - 返回 `room.joined`。
 - 广播 `peer.joined`。
 - 发送 `room.snapshot`。
 
-### 6.2 `room.joined`
+### 7.2 `room.joined`
 
 ```json
 {
   "type": "room.joined",
   "requestId": "req-join-001",
   "roomId": "839204",
-  "peerId": "peer-abc",
+  "peerId": "app-peer-abc",
   "userId": 1,
   "username": "演示用户",
   "timestamp": 1783072800000,
   "payload": {
-    "mediaInstanceId": "media-001"
+    "livekitRoomName": "streamforge-839204",
+    "livekitIdentity": "user-1-a1b2c3d4"
   }
 }
 ```
 
-### 6.3 `room.snapshot`
+### 7.3 `room.snapshot`
 
 ```json
 {
   "type": "room.snapshot",
   "roomId": "839204",
-  "peerId": "peer-abc",
-  "userId": 1,
-  "username": "演示用户",
   "timestamp": 1783072800000,
   "payload": {
     "peers": [
       {
-        "peerId": "peer-abc",
+        "peerId": "app-peer-abc",
         "userId": 1,
         "username": "演示用户",
-        "audioEnabled": true,
-        "videoEnabled": true,
-        "screenSharing": false
+        "livekitIdentity": "user-1"
       }
     ]
   }
 }
 ```
 
-### 6.4 `room.leave`
+### 7.4 `room.leave`
 
 ```json
 {
   "type": "room.leave",
   "requestId": "req-leave-001",
   "roomId": "839204",
-  "peerId": "peer-abc",
+  "peerId": "app-peer-abc",
   "userId": 1,
   "username": "演示用户",
   "payload": {}
 }
 ```
 
-服务端关闭该 Peer 相关的 WebRTC 和房间状态，并广播 `peer.left`。
+服务端关闭该 WebSocket 业务连接，并广播 `peer.left`。LiveKit 媒体连接由前端 `room.disconnect()` 关闭。
 
-## 7. 聊天消息
+## 8. 聊天消息
 
-### 7.1 `chat.send`
+### 8.1 `chat.send`
 
 ```json
 {
   "type": "chat.send",
   "requestId": "req-chat-001",
   "roomId": "839204",
-  "peerId": "peer-abc",
+  "peerId": "app-peer-abc",
   "userId": 1,
   "username": "演示用户",
   "payload": {
@@ -276,13 +277,13 @@ MVP 暂不使用 Token。服务端从查询参数和后续 `room.join` 消息中
 - `content` 去除首尾空白后不能为空。
 - `content` 最大长度 1000 字符。
 
-### 7.2 `chat.message`
+### 8.2 `chat.message`
 
 ```json
 {
   "type": "chat.message",
   "roomId": "839204",
-  "peerId": "peer-abc",
+  "peerId": "app-peer-abc",
   "userId": 1,
   "username": "演示用户",
   "timestamp": 1783072800000,
@@ -295,151 +296,7 @@ MVP 暂不使用 Token。服务端从查询参数和后续 `room.join` 消息中
 
 MVP 不持久化聊天消息。服务端只在房间内广播。
 
-## 8. WebRTC 信令
-
-### 8.1 `webrtc.offer`
-
-```json
-{
-  "type": "webrtc.offer",
-  "requestId": "req-offer-001",
-  "roomId": "839204",
-  "peerId": "peer-abc",
-  "userId": 1,
-  "username": "演示用户",
-  "payload": {
-    "sdp": "v=0...",
-    "type": "offer"
-  }
-}
-```
-
-### 8.2 `webrtc.answer`
-
-```json
-{
-  "type": "webrtc.answer",
-  "requestId": "req-offer-001",
-  "roomId": "839204",
-  "peerId": "peer-abc",
-  "userId": 1,
-  "username": "演示用户",
-  "timestamp": 1783072800000,
-  "payload": {
-    "sdp": "v=0...",
-    "type": "answer"
-  }
-}
-```
-
-### 8.3 `webrtc.ice_candidate`
-
-```json
-{
-  "type": "webrtc.ice_candidate",
-  "requestId": "req-ice-001",
-  "roomId": "839204",
-  "peerId": "peer-abc",
-  "userId": 1,
-  "username": "演示用户",
-  "payload": {
-    "candidate": "candidate:...",
-    "sdpMid": "0",
-    "sdpMLineIndex": 0
-  }
-}
-```
-
-ICE Candidate 可以双向发送。服务端需要在 PeerConnection 未准备好时短暂缓存 Candidate。
-
-## 9. 媒体状态消息
-
-### 9.1 `media.state.update`
-
-```json
-{
-  "type": "media.state.update",
-  "requestId": "req-media-001",
-  "roomId": "839204",
-  "peerId": "peer-abc",
-  "userId": 1,
-  "username": "演示用户",
-  "payload": {
-    "audioEnabled": false,
-    "videoEnabled": true
-  }
-}
-```
-
-### 9.2 `peer.media_state`
-
-```json
-{
-  "type": "peer.media_state",
-  "roomId": "839204",
-  "peerId": "peer-abc",
-  "userId": 1,
-  "username": "演示用户",
-  "timestamp": 1783072800000,
-  "payload": {
-    "audioEnabled": false,
-    "videoEnabled": true
-  }
-}
-```
-
-## 10. 屏幕共享消息
-
-### 10.1 `screen.share.start`
-
-```json
-{
-  "type": "screen.share.start",
-  "requestId": "req-screen-001",
-  "roomId": "839204",
-  "peerId": "peer-abc",
-  "userId": 1,
-  "username": "演示用户",
-  "payload": {
-    "trackId": "screen-track-001"
-  }
-}
-```
-
-### 10.2 `screen.share.stop`
-
-```json
-{
-  "type": "screen.share.stop",
-  "requestId": "req-screen-002",
-  "roomId": "839204",
-  "peerId": "peer-abc",
-  "userId": 1,
-  "username": "演示用户",
-  "payload": {
-    "trackId": "screen-track-001"
-  }
-}
-```
-
-### 10.3 `peer.screen_share`
-
-```json
-{
-  "type": "peer.screen_share",
-  "roomId": "839204",
-  "peerId": "peer-abc",
-  "userId": 1,
-  "username": "演示用户",
-  "timestamp": 1783072800000,
-  "payload": {
-    "screenSharing": true,
-    "trackId": "screen-track-001"
-  }
-}
-```
-
-## 11. 心跳
+## 9. 心跳
 
 客户端每 20 秒发送一次：
 
@@ -448,7 +305,7 @@ ICE Candidate 可以双向发送。服务端需要在 PeerConnection 未准备�
   "type": "ping",
   "requestId": "req-ping-001",
   "roomId": "839204",
-  "peerId": "peer-abc",
+  "peerId": "app-peer-abc",
   "userId": 1,
   "username": "演示用户",
   "payload": {}
@@ -462,7 +319,7 @@ ICE Candidate 可以双向发送。服务端需要在 PeerConnection 未准备�
   "type": "pong",
   "requestId": "req-ping-001",
   "roomId": "839204",
-  "peerId": "peer-abc",
+  "peerId": "app-peer-abc",
   "userId": 1,
   "username": "演示用户",
   "timestamp": 1783072800000,
@@ -470,7 +327,7 @@ ICE Candidate 可以双向发送。服务端需要在 PeerConnection 未准备�
 }
 ```
 
-## 12. 错误响应
+## 10. 错误响应
 
 ```json
 {
@@ -490,18 +347,14 @@ ICE Candidate 可以双向发送。服务端需要在 PeerConnection 未准备�
 | 错误码 | 说明 |
 |:---|:---|
 | `BAD_REQUEST` | 请求格式错误或参数缺失 |
-| `ROOM_NOT_FOUND` | 房间不存在 |
-| `ROOM_NOT_ON_INSTANCE` | 当前连接的媒体实例不是该房间所属实例 |
-| `MEDIA_INSTANCE_UNAVAILABLE` | 房间所属媒体实例不可用 |
+| `ROOM_NOT_FOUND` | StreamForge 业务房间不存在 |
+| `LIVEKIT_UNAVAILABLE` | LiveKit 配置不可用或 Token 签发失败 |
 | `PEER_NOT_JOINED` | Peer 尚未完成 `room.join` |
-| `INVALID_SDP` | SDP 无效 |
-| `INVALID_ICE_CANDIDATE` | ICE Candidate 无效 |
-| `MESSAGE_TOO_LONG` | 聊天消息过长 |
+| `MESSAGE_TOO_LONG` | 聊天消息过长或为空 |
 | `INTERNAL_ERROR` | 服务端内部错误 |
 
-## 13. 兼容性规则
+## 11. 兼容性规则
 
-- 新增消息类型必须向后兼容旧客户端。
-- 修改已有 `payload` 字段时只能新增可选字段，不得随意改名。
-- 删除字段必须先在文档和代码中标记废弃，再在后续版本移除。
+- 创建/加入房间响应从旧的 `mediaInstanceId/wsUrl/rtcConfig` 改为 `livekitRoomName/livekitUrl/livekitToken/livekitIdentity/appWsUrl`，这是阶段二的有意破坏性变更。
+- WebRTC 底层消息类型由 LiveKit 接管，StreamForge 前端不再发送 `webrtc.offer`、`webrtc.answer`、`webrtc.ice_candidate`。
 - WebSocket 消息类型必须和前端 TypeScript 类型保持一致。

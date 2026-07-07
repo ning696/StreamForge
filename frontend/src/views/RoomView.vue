@@ -2,17 +2,20 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Close, Connection, VideoCamera } from '@element-plus/icons-vue'
+import { Close } from '@element-plus/icons-vue'
 import ChatPanel from '@/components/ChatPanel.vue'
 import MemberList from '@/components/MemberList.vue'
+import VideoGrid from '@/components/VideoGrid.vue'
 import { joinRoom } from '@/api/room'
 import { getErrorMessage } from '@/api/http'
+import { LiveKitRoomConnection } from '@/livekit/client'
 import { SignalingClient } from '@/signaling/client'
 import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
-import { useConnectionStore } from '@/stores/connection'
+import { useConnectionStore, type RtcStatus, type SignalingStatus } from '@/stores/connection'
 import { useRoomStore } from '@/stores/room'
 import type { ChatMessage, PeerState, SignalingEnvelope } from '@/types'
+import type { MediaTile } from '@/livekit/connection'
 
 const router = useRouter()
 const route = useRoute()
@@ -22,15 +25,17 @@ const chatStore = useChatStore()
 const connectionStore = useConnectionStore()
 const loading = ref(true)
 const signaling = ref<SignalingClient | null>(null)
+const livekit = ref<LiveKitRoomConnection | null>(null)
+const mediaTiles = ref<MediaTile[]>([])
 const roomId = computed(() => String(route.params.roomId ?? ''))
-const connected = computed(() => connectionStore.signalingStatus === 'connected' && roomStore.joined)
+const appWsConnected = computed(() => connectionStore.signalingStatus === 'connected' && roomStore.joined)
 
 onMounted(async () => {
   await enterRoom()
 })
 
 onBeforeUnmount(() => {
-  signaling.value?.close(roomStore.peerId)
+  shutdownConnections()
 })
 
 async function enterRoom() {
@@ -40,25 +45,43 @@ async function enterRoom() {
   }
   loading.value = true
   connectionStore.clearError()
+  connectionStore.setRtcStatus('idle')
+  connectionStore.setSignalingStatus('idle')
   try {
-    const routeInfo = await joinRoom(roomId.value, authStore.user.userId, authStore.user.username)
-    roomStore.setRoute(routeInfo)
+    const connection = await joinRoom(roomId.value, authStore.user.userId, authStore.user.username)
+    roomStore.setConnection(connection)
     chatStore.clear()
+    mediaTiles.value = []
+
+    livekit.value = new LiveKitRoomConnection({
+      onStatusChange: (status) => connectionStore.setRtcStatus(status),
+      onTilesChange: (tiles) => {
+        mediaTiles.value = tiles
+      },
+      onError: (message) => {
+        connectionStore.setError(message, { source: 'rtc' })
+        ElMessage.error(message)
+      },
+    })
+    await livekit.value.connect({ url: connection.livekitUrl, token: connection.livekitToken })
+
     signaling.value = new SignalingClient(
-      routeInfo.roomId,
+      connection.roomId,
       authStore.user,
+      connection.livekitIdentity,
       handleMessage,
       (status, message) => {
         connectionStore.setSignalingStatus(status)
         if (message) {
-          connectionStore.setError(message)
+          connectionStore.setError(message, { source: 'signaling' })
         }
       },
     )
-    signaling.value.connect(routeInfo.wsUrl)
+    signaling.value.connect(connection.appWsUrl)
   } catch (error) {
-    connectionStore.setError(getErrorMessage(error))
-    ElMessage.error(getErrorMessage(error))
+    const message = getErrorMessage(error)
+    connectionStore.setError(message, { source: 'general' })
+    ElMessage.error(message)
   } finally {
     loading.value = false
   }
@@ -106,10 +129,67 @@ function sendChat(content: string) {
 }
 
 async function leaveRoom() {
-  signaling.value?.close(roomStore.peerId)
+  shutdownConnections()
   roomStore.clear()
   chatStore.clear()
   await router.push('/')
+}
+
+function shutdownConnections() {
+  signaling.value?.close(roomStore.peerId)
+  signaling.value = null
+  livekit.value?.disconnect()
+  livekit.value = null
+  mediaTiles.value = []
+}
+
+function rtcTagType(status: RtcStatus) {
+  if (status === 'connected') {
+    return 'success'
+  }
+  if (status === 'failed') {
+    return 'danger'
+  }
+  if (status === 'reconnecting' || status === 'connecting') {
+    return 'warning'
+  }
+  return 'info'
+}
+
+function signalingTagType(status: SignalingStatus) {
+  if (status === 'connected') {
+    return 'success'
+  }
+  if (status === 'error') {
+    return 'danger'
+  }
+  if (status === 'connecting') {
+    return 'warning'
+  }
+  return 'info'
+}
+
+function rtcStatusText(status: RtcStatus) {
+  const labels: Record<RtcStatus, string> = {
+    idle: '未连接',
+    connecting: '连接中',
+    connected: '已连接',
+    reconnecting: '重连中',
+    failed: '连接失败',
+    closed: '已关闭',
+  }
+  return labels[status]
+}
+
+function signalingStatusText(status: SignalingStatus) {
+  const labels: Record<SignalingStatus, string> = {
+    idle: '未连接',
+    connecting: '连接中',
+    connected: '已连接',
+    closed: '已关闭',
+    error: '连接错误',
+  }
+  return labels[status]
 }
 </script>
 
@@ -118,13 +198,16 @@ async function leaveRoom() {
     <header class="room-header">
       <div>
         <span>房间 {{ roomId }}</span>
-        <h1>StreamForge M1 房间</h1>
+        <h1>StreamForge 音视频房间</h1>
       </div>
       <div class="room-status">
-        <el-tag :type="connected ? 'success' : 'warning'" effect="plain">
-          {{ connected ? '信令已连接' : connectionStore.signalingStatus }}
+        <el-tag :type="rtcTagType(connectionStore.rtcStatus)" effect="plain">
+          LiveKit：{{ rtcStatusText(connectionStore.rtcStatus) }}
         </el-tag>
-        <el-button :icon="Close" @click="leaveRoom">离开</el-button>
+        <el-tag :type="signalingTagType(connectionStore.signalingStatus)" effect="plain">
+          应用信令：{{ signalingStatusText(connectionStore.signalingStatus) }}
+        </el-tag>
+        <el-button :icon="Close" @click="leaveRoom">离开房间</el-button>
       </div>
     </header>
 
@@ -138,20 +221,12 @@ async function leaveRoom() {
 
     <section v-loading="loading" class="room-shell">
       <section class="stage">
-        <div class="stage-content">
-          <el-icon><VideoCamera /></el-icon>
-          <h2>音视频将在 Week 3-5 接入</h2>
-          <p>当前阶段专注验证用户服务、Redis 房间路由、WebSocket 成员状态和聊天广播。</p>
-          <div class="route-line">
-            <el-icon><Connection /></el-icon>
-            <span>媒体实例：{{ roomStore.mediaInstanceId || '等待路由' }}</span>
-          </div>
-        </div>
+        <VideoGrid :tiles="mediaTiles" :status="connectionStore.rtcStatus" />
       </section>
 
       <aside class="side-rail">
         <MemberList :peers="roomStore.peers" />
-        <ChatPanel :disabled="!connected" @send="sendChat" />
+        <ChatPanel :disabled="!appWsConnected" @send="sendChat" />
       </aside>
     </section>
   </main>

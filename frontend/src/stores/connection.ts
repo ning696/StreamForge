@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 
 export type SignalingStatus = 'idle' | 'connecting' | 'connected' | 'closed' | 'error'
-export type RtcStatus = 'idle' | 'connecting' | 'connected' | 'failed' | 'closed'
+export type RtcStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'failed' | 'closed'
 
 export const useConnectionStore = defineStore('connection', {
   state: () => ({
@@ -13,8 +13,16 @@ export const useConnectionStore = defineStore('connection', {
     setSignalingStatus(status: SignalingStatus) {
       this.signalingStatus = status
     },
-    setError(message: string) {
-      this.signalingStatus = 'error'
+    setRtcStatus(status: RtcStatus) {
+      this.rtcStatus = status
+    },
+    setError(message: string, options: { source?: 'signaling' | 'rtc' | 'general' } = {}) {
+      if (options.source === 'signaling') {
+        this.signalingStatus = 'error'
+      }
+      if (options.source === 'rtc' || options.source === 'general' || !options.source) {
+        this.rtcStatus = 'failed'
+      }
       this.errorMessage = message
     },
     clearError() {

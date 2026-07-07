@@ -33,6 +33,20 @@ services:
       timeout: 5s
       retries: 10
 
+  livekit:
+    image: livekit/livekit-server:latest
+    container_name: streamforge-livekit
+    command: ["--config", "/etc/livekit.yaml"]
+    volumes:
+      - ./deploy/livekit/livekit.yaml:/etc/livekit.yaml:ro
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "30000-30100:30000-30100/udp"
+    depends_on:
+      redis:
+        condition: service_healthy
+
 volumes:
   streamforge_mysql_data:
   streamforge_redis_data:
