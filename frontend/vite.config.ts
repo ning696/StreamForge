@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { fileURLToPath, URL } from 'node:url'
 
 import { defineConfig } from 'vite'
@@ -13,6 +14,34 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
+    },
+  },
+  server: {
+    host: '0.0.0.0',
+    port: 5173,
+    strictPort: true,
+    https: {
+      cert: readFileSync(fileURLToPath(new URL('./certs/dev-cert.pem', import.meta.url))),
+      key: readFileSync(fileURLToPath(new URL('./certs/dev-key.pem', import.meta.url))),
+    },
+    proxy: {
+      '/api/users': {
+        target: 'http://127.0.0.1:8081',
+        changeOrigin: true,
+      },
+      '/api/rooms': {
+        target: 'http://127.0.0.1:8080',
+        changeOrigin: true,
+      },
+      '/ws/rooms': {
+        target: 'ws://127.0.0.1:8080',
+        ws: true,
+      },
+      '/livekit': {
+        target: 'ws://127.0.0.1:7880',
+        ws: true,
+        rewrite: (path) => path.replace(/^\/livekit/, ''),
+      },
     },
   },
 })
