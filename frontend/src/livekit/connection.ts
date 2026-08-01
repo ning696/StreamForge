@@ -1,5 +1,4 @@
 export type LiveKitStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'failed' | 'closed'
-export type MediaKind = 'audio' | 'video'
 export type MediaSource = 'camera' | 'microphone' | 'screen' | 'unknown'
 
 export interface AttachableTrack {
@@ -7,15 +6,19 @@ export interface AttachableTrack {
   detach(element?: HTMLMediaElement): HTMLMediaElement[] | HTMLMediaElement
 }
 
-export interface MediaTile {
-  id: string
+export interface ParticipantTile {
   participantIdentity: string
   participantName: string
   isLocal: boolean
-  kind: MediaKind
-  source: MediaSource
-  muted: boolean
-  track?: AttachableTrack
+  joinOrder: number
+  cameraTrack?: AttachableTrack
+  microphoneTrack?: AttachableTrack
+  screenShareTrack?: AttachableTrack
+  cameraEnabled: boolean
+  microphoneEnabled: boolean
+  microphoneMuted: boolean
+  screenSharing: boolean
+  screenShareOrder?: number
 }
 
 export function liveKitConnectionStateToStatus(state: string): LiveKitStatus {
@@ -47,19 +50,23 @@ export function roomEventToStatus(event: string): LiveKitStatus {
   }
 }
 
-export function compareMediaTiles(left: MediaTile, right: MediaTile): number {
-  return tilePriority(left) - tilePriority(right) || left.id.localeCompare(right.id)
+export function compareParticipantTiles(left: ParticipantTile, right: ParticipantTile): number {
+  if (left.isLocal !== right.isLocal) {
+    return left.isLocal ? -1 : 1
+  }
+  return left.joinOrder - right.joinOrder || left.participantIdentity.localeCompare(right.participantIdentity)
 }
 
-function tilePriority(tile: MediaTile) {
-  if (tile.isLocal && tile.kind === 'video') {
-    return 0
-  }
-  if (tile.kind === 'video') {
-    return 1
-  }
-  if (tile.isLocal) {
-    return 2
-  }
-  return 3
+export function getRemoteAudioParticipants(participants: ParticipantTile[]): ParticipantTile[] {
+  return participants.filter((participant) => !participant.isLocal && participant.microphoneTrack)
+}
+
+export function getActiveScreenShare(participants: ParticipantTile[]): ParticipantTile | undefined {
+  return participants
+    .filter((participant) => participant.screenShareTrack && participant.screenSharing)
+    .sort(
+      (left, right) =>
+        (right.screenShareOrder ?? -1) - (left.screenShareOrder ?? -1) ||
+        compareParticipantTiles(left, right),
+    )[0]
 }

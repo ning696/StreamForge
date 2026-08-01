@@ -219,6 +219,7 @@ p {
 }
 
 .video-grid-shell {
+  position: relative;
   display: grid;
   min-height: 520px;
   height: 100%;
@@ -227,20 +228,36 @@ p {
 
 .video-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   align-content: center;
+  justify-content: center;
   gap: 14px;
+  width: 100%;
   min-height: 100%;
 }
 
-.video-grid[data-count="1"] {
-  grid-template-columns: minmax(0, 1fr);
+.video-grid.participants-1 {
+  grid-template-columns: minmax(0, 960px);
+}
+
+.video-grid.participants-2,
+.video-grid.participants-3,
+.video-grid.participants-4 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.video-grid.participants-5,
+.video-grid.participants-6 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.video-grid.participants-7,
+.video-grid.participants-8 {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .video-tile {
   position: relative;
   display: grid;
-  min-height: 220px;
   aspect-ratio: 16 / 9;
   overflow: hidden;
   border: 1px solid rgba(226, 232, 240, 0.16);
@@ -254,30 +271,45 @@ p {
   border-color: rgba(119, 224, 209, 0.52);
 }
 
-.video-tile.is-audio {
-  min-height: 180px;
-}
-
-.media-video {
+.media-video,
+.screen-share-video {
   width: 100%;
   height: 100%;
-  object-fit: cover;
   background: #020617;
 }
 
-.audio-placeholder,
+.media-video {
+  object-fit: cover;
+}
+
+.camera-placeholder,
 .video-empty-state {
   display: grid;
   place-items: center;
   text-align: center;
 }
 
-.audio-placeholder {
+.camera-placeholder {
+  align-content: center;
+  gap: 12px;
   min-height: 100%;
-  color: #77e0d1;
+  padding: 24px;
+  color: #cbd5e1;
 }
 
-.audio-placeholder .el-icon,
+.participant-avatar {
+  display: grid;
+  width: 72px;
+  height: 72px;
+  place-items: center;
+  border: 1px solid rgba(119, 224, 209, 0.36);
+  border-radius: 50%;
+  background: rgba(119, 224, 209, 0.14);
+  color: #77e0d1;
+  font-size: 24px;
+  font-weight: 800;
+}
+
 .video-empty-state .el-icon {
   width: 58px;
   height: 58px;
@@ -335,6 +367,70 @@ p {
   background: rgba(15, 23, 42, 0.48);
 }
 
+.tile-meta .media-status {
+  display: inline-flex;
+  align-items: center;
+  color: #77e0d1;
+}
+
+.tile-meta .media-status.is-muted {
+  color: #fca5a5;
+}
+
+.audio-renderers,
+.hidden-audio {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.screen-share-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 220px;
+  gap: 14px;
+  min-width: 0;
+  min-height: 100%;
+}
+
+.screen-share-stage {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid rgba(119, 224, 209, 0.42);
+  border-radius: 8px;
+  background: #020617;
+}
+
+.screen-share-video {
+  object-fit: contain;
+}
+
+.screen-share-label {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: rgba(2, 6, 23, 0.78);
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.screen-participant-strip {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .video-empty-state {
   align-content: center;
   gap: 14px;
@@ -369,6 +465,13 @@ p {
   text-align: center;
 }
 
+@media (max-width: 1100px) {
+  .video-grid.participants-7,
+  .video-grid.participants-8 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 860px) {
   .home-hero,
   .room-header {
@@ -390,8 +493,24 @@ p {
     min-height: 360px;
   }
 
-  .video-grid {
-    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  .video-grid.participants-5,
+  .video-grid.participants-6,
+  .video-grid.participants-7,
+  .video-grid.participants-8 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .screen-share-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .screen-share-stage {
+    aspect-ratio: 16 / 9;
+  }
+
+  .screen-participant-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow-y: visible;
   }
 
   .side-rail {
@@ -424,6 +543,17 @@ p {
 
   .video-grid-shell {
     padding: 10px;
+  }
+
+  .video-grid.participants-2,
+  .video-grid.participants-3,
+  .video-grid.participants-4,
+  .video-grid.participants-5,
+  .video-grid.participants-6,
+  .video-grid.participants-7,
+  .video-grid.participants-8,
+  .screen-participant-strip {
+    grid-template-columns: 1fr;
   }
 
   .tile-footer {

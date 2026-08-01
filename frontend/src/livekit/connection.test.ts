@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
-  compareMediaTiles,
+  compareParticipantTiles,
+  getActiveScreenShare,
+  getRemoteAudioParticipants,
   liveKitConnectionStateToStatus,
   roomEventToStatus,
-  type MediaTile,
+  type ParticipantTile,
 } from './connection'
 
 describe('liveKitConnectionStateToStatus', () => {
@@ -25,32 +27,63 @@ describe('roomEventToStatus', () => {
   })
 })
 
-describe('compareMediaTiles', () => {
-  it('keeps local video first, then remote videos, then remote audio-only tracks', () => {
-    const tiles: MediaTile[] = [
-      tile('remote-audio', false, 'audio'),
-      tile('remote-video-b', false, 'video'),
-      tile('local-video', true, 'video'),
-      tile('remote-video-a', false, 'video'),
+describe('participant view helpers', () => {
+  it('keeps the local participant first and preserves remote join order', () => {
+    const participants = [
+      participant('remote-2', false, 2),
+      participant('local', true, 0),
+      participant('remote-1', false, 1),
     ]
 
-    expect([...tiles].sort(compareMediaTiles).map((item) => item.id)).toEqual([
-      'local-video',
-      'remote-video-a',
-      'remote-video-b',
-      'remote-audio',
+    expect([...participants].sort(compareParticipantTiles).map((item) => item.participantIdentity)).toEqual([
+      'local',
+      'remote-1',
+      'remote-2',
     ])
+  })
+
+  it('selects only remote microphone tracks for hidden playback', () => {
+    const local = participant('local', true, 0)
+    const remoteWithAudio = participant('remote-audio', false, 1)
+    const remoteWithoutAudio = participant('remote-silent', false, 2)
+    local.microphoneTrack = track()
+    remoteWithAudio.microphoneTrack = track()
+
+    expect(getRemoteAudioParticipants([local, remoteWithAudio, remoteWithoutAudio])).toEqual([
+      remoteWithAudio,
+    ])
+  })
+
+  it('selects the most recently started screen share', () => {
+    const first = participant('first', false, 1)
+    const latest = participant('latest', false, 2)
+    first.screenShareTrack = track()
+    first.screenSharing = true
+    first.screenShareOrder = 3
+    latest.screenShareTrack = track()
+    latest.screenSharing = true
+    latest.screenShareOrder = 4
+
+    expect(getActiveScreenShare([first, latest])).toBe(latest)
   })
 })
 
-function tile(id: string, isLocal: boolean, kind: MediaTile['kind']): MediaTile {
+function participant(identity: string, isLocal: boolean, joinOrder: number): ParticipantTile {
   return {
-    id,
-    participantIdentity: id,
-    participantName: id,
+    participantIdentity: identity,
+    participantName: identity,
     isLocal,
-    kind,
-    source: 'camera',
-    muted: false,
+    joinOrder,
+    cameraEnabled: false,
+    microphoneEnabled: false,
+    microphoneMuted: false,
+    screenSharing: false,
+  }
+}
+
+function track() {
+  return {
+    attach: () => document.createElement('video'),
+    detach: () => [],
   }
 }

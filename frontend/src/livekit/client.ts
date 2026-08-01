@@ -1,13 +1,12 @@
 import { Room, RoomEvent } from 'livekit-client'
 import {
-  compareMediaTiles,
+  compareParticipantTiles,
   liveKitConnectionStateToStatus,
   roomEventToStatus,
   type AttachableTrack,
   type LiveKitStatus,
-  type MediaKind,
   type MediaSource,
-  type MediaTile,
+  type ParticipantTile,
 } from './connection'
 
 export interface LiveKitConnectOptions {
@@ -47,7 +46,7 @@ export interface LiveKitPublicationLike {
 export interface LiveKitRoomConnectionOptions {
   createRoom?: () => LiveKitRoomLike
   onStatusChange?: (status: LiveKitStatus) => void
-  onTilesChange?: (tiles: MediaTile[]) => void
+  onParticipantsChange?: (participants: ParticipantTile[]) => void
   onError?: (message: string) => void
 }
 
@@ -56,16 +55,18 @@ type RoomHandler = (...args: any[]) => void
 export class LiveKitRoomConnection {
   private readonly createRoom: () => LiveKitRoomLike
   private readonly onStatusChange?: (status: LiveKitStatus) => void
-  private readonly onTilesChange?: (tiles: MediaTile[]) => void
+  private readonly onParticipantsChange?: (participants: ParticipantTile[]) => void
   private readonly onError?: (message: string) => void
   private room: LiveKitRoomLike | null = null
-  private readonly tiles = new Map<string, MediaTile>()
+  private readonly participants = new Map<string, ParticipantTile>()
   private readonly handlers: Array<[string, RoomHandler]> = []
+  private nextJoinOrder = 0
+  private nextScreenShareOrder = 0
 
   constructor(options: LiveKitRoomConnectionOptions = {}) {
     this.createRoom = options.createRoom ?? (() => new Room() as unknown as LiveKitRoomLike)
     this.onStatusChange = options.onStatusChange
-    this.onTilesChange = options.onTilesChange
+    this.onParticipantsChange = options.onParticipantsChange
     this.onError = options.onError
   }
 
@@ -86,8 +87,9 @@ export class LiveKitRoomConnection {
     }
 
     this.setStatus('connected')
+    this.collectExistingParticipants(room)
     await this.enableLocalMedia(room)
-    this.collectExistingTiles(room)
+    this.collectExistingTracks(room)
   }
 
   disconnect(emitClosed = true): void {
@@ -99,8 +101,10 @@ export class LiveKitRoomConnection {
       this.room.disconnect()
       this.room = null
     }
-    this.tiles.clear()
-    this.emitTiles()
+    this.participants.clear()
+    this.nextJoinOrder = 0
+    this.nextScreenShareOrder = 0
+    this.emitParticipants()
     if (emitClosed) {
       this.setStatus('closed')
     }
@@ -115,20 +119,23 @@ export class LiveKitRoomConnection {
   }
 
   private bindRoomEvents(room: LiveKitRoomLike) {
+    this.on(room, RoomEvent.ParticipantConnected, (participant) => {
+      this.upsertParticipant(participant, false)
+    })
     this.on(room, RoomEvent.TrackSubscribed, (track, publication, participant) => {
-      this.upsertTile(track, publication, participant, false)
+      this.upsertTrack(track, publication, participant, false)
     })
     this.on(room, RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
-      this.removeTile(track, publication, participant, false)
+      this.removeTrack(track, publication, participant)
     })
     this.on(room, RoomEvent.LocalTrackPublished, (publication, participant) => {
-      this.upsertTile(publication?.track, publication, participant ?? room.localParticipant, true)
+      this.upsertTrack(publication?.track, publication, participant ?? room.localParticipant, true)
     })
     this.on(room, RoomEvent.LocalTrackUnpublished, (publication, participant) => {
-      this.removeTile(publication?.track, publication, participant ?? room.localParticipant, true)
+      this.removeTrack(publication?.track, publication, participant ?? room.localParticipant)
     })
     this.on(room, RoomEvent.ParticipantDisconnected, (participant) => {
-      this.removeParticipantTiles(participant?.identity)
+      this.removeParticipant(participant?.identity)
     })
     this.on(room, RoomEvent.ConnectionStateChanged, (state) => {
       this.setStatus(liveKitConnectionStateToStatus(String(state)))
@@ -136,8 +143,8 @@ export class LiveKitRoomConnection {
     this.on(room, RoomEvent.Reconnecting, () => this.setStatus(roomEventToStatus('reconnecting')))
     this.on(room, RoomEvent.Reconnected, () => this.setStatus(roomEventToStatus('reconnected')))
     this.on(room, RoomEvent.Disconnected, () => {
-      this.tiles.clear()
-      this.emitTiles()
+      this.participants.clear()
+      this.emitParticipants()
       this.setStatus(roomEventToStatus('disconnected'))
     })
     this.on(room, RoomEvent.MediaDevicesError, (error) => {
@@ -156,18 +163,51 @@ export class LiveKitRoomConnection {
     this.handlers.push([event, handler])
   }
 
-  private collectExistingTiles(room: LiveKitRoomLike) {
+  private collectExistingParticipants(room: LiveKitRoomLike) {
+    this.upsertParticipant(room.localParticipant, true)
+    for (const participant of room.remoteParticipants?.values() ?? []) {
+      this.upsertParticipant(participant, false)
+    }
+  }
+
+  private collectExistingTracks(room: LiveKitRoomLike) {
     for (const publication of toPublications(room.localParticipant.trackPublications)) {
-      this.upsertTile(publication.track, publication, room.localParticipant, true)
+      this.upsertTrack(publication.track, publication, room.localParticipant, true)
     }
     for (const participant of room.remoteParticipants?.values() ?? []) {
       for (const publication of toPublications(participant.trackPublications)) {
-        this.upsertTile(publication.track, publication, participant, false)
+        this.upsertTrack(publication.track, publication, participant, false)
       }
     }
   }
 
-  private upsertTile(
+  private upsertParticipant(participant: LiveKitParticipantLike | undefined, isLocal: boolean) {
+    if (!participant?.identity) {
+      return
+    }
+    const existing = this.participants.get(participant.identity)
+    if (existing) {
+      this.participants.set(participant.identity, {
+        ...existing,
+        participantName: participant.name || participant.identity,
+        isLocal: existing.isLocal || isLocal,
+      })
+    } else {
+      this.participants.set(participant.identity, {
+        participantIdentity: participant.identity,
+        participantName: participant.name || participant.identity,
+        isLocal,
+        joinOrder: this.nextJoinOrder++,
+        cameraEnabled: false,
+        microphoneEnabled: false,
+        microphoneMuted: false,
+        screenSharing: false,
+      })
+    }
+    this.emitParticipants()
+  }
+
+  private upsertTrack(
     track: LiveKitPublicationLike['track'] | undefined,
     publication: LiveKitPublicationLike | undefined,
     participant: LiveKitParticipantLike | undefined,
@@ -176,47 +216,83 @@ export class LiveKitRoomConnection {
     if (!track || !publication || !participant) {
       return
     }
-    const kind = normalizeKind(track.kind ?? publication.kind)
-    if (!kind) {
+    this.upsertParticipant(participant, isLocal)
+    const existing = this.participants.get(participant.identity)
+    if (!existing) {
       return
     }
-    const id = createTileId(participant, publication, track, isLocal)
-    this.tiles.set(id, {
-      id,
-      participantIdentity: participant.identity,
-      participantName: participant.name || participant.identity,
-      isLocal,
-      kind,
-      source: normalizeSource(track.source ?? publication.source),
-      muted: Boolean(publication.isMuted),
-      track,
-    })
-    this.emitTiles()
+
+    const source = resolveSource(track, publication)
+    const muted = Boolean(publication.isMuted)
+    if (source === 'camera') {
+      this.participants.set(participant.identity, {
+        ...existing,
+        cameraTrack: track,
+        cameraEnabled: !muted,
+      })
+    } else if (source === 'microphone') {
+      this.participants.set(participant.identity, {
+        ...existing,
+        microphoneTrack: track,
+        microphoneEnabled: !muted,
+        microphoneMuted: muted,
+      })
+    } else if (source === 'screen') {
+      const isNewShare = existing.screenShareTrack !== track
+      this.participants.set(participant.identity, {
+        ...existing,
+        screenShareTrack: track,
+        screenSharing: !muted,
+        screenShareOrder: isNewShare ? this.nextScreenShareOrder++ : existing.screenShareOrder,
+      })
+    }
+    this.emitParticipants()
   }
 
-  private removeTile(
+  private removeTrack(
     track: LiveKitPublicationLike['track'] | undefined,
     publication: LiveKitPublicationLike | undefined,
     participant: LiveKitParticipantLike | undefined,
-    isLocal: boolean,
   ) {
     if (!publication || !participant) {
       return
     }
-    this.tiles.delete(createTileId(participant, publication, track, isLocal))
-    this.emitTiles()
+    const existing = this.participants.get(participant.identity)
+    if (!existing) {
+      return
+    }
+
+    const source = resolveSource(track, publication)
+    if (source === 'camera') {
+      this.participants.set(participant.identity, {
+        ...existing,
+        cameraTrack: undefined,
+        cameraEnabled: false,
+      })
+    } else if (source === 'microphone') {
+      this.participants.set(participant.identity, {
+        ...existing,
+        microphoneTrack: undefined,
+        microphoneEnabled: false,
+        microphoneMuted: true,
+      })
+    } else if (source === 'screen') {
+      this.participants.set(participant.identity, {
+        ...existing,
+        screenShareTrack: undefined,
+        screenSharing: false,
+        screenShareOrder: undefined,
+      })
+    }
+    this.emitParticipants()
   }
 
-  private removeParticipantTiles(identity?: string) {
+  private removeParticipant(identity?: string) {
     if (!identity) {
       return
     }
-    for (const [id, tile] of this.tiles) {
-      if (tile.participantIdentity === identity) {
-        this.tiles.delete(id)
-      }
-    }
-    this.emitTiles()
+    this.participants.delete(identity)
+    this.emitParticipants()
   }
 
   private setMuted(
@@ -227,17 +303,28 @@ export class LiveKitRoomConnection {
     if (!publication || !participant) {
       return
     }
-    for (const [id, tile] of this.tiles) {
-      const publicationId = publication.trackSid ?? publication.sid ?? publication.track?.sid
-      if (tile.participantIdentity === participant.identity && id.includes(`:${publicationId}`)) {
-        this.tiles.set(id, { ...tile, muted })
-      }
+    const existing = this.participants.get(participant.identity)
+    if (!existing) {
+      return
     }
-    this.emitTiles()
+
+    const source = resolveSource(publication.track, publication)
+    if (source === 'camera') {
+      this.participants.set(participant.identity, { ...existing, cameraEnabled: !muted })
+    } else if (source === 'microphone') {
+      this.participants.set(participant.identity, {
+        ...existing,
+        microphoneEnabled: !muted,
+        microphoneMuted: muted,
+      })
+    } else if (source === 'screen') {
+      this.participants.set(participant.identity, { ...existing, screenSharing: !muted })
+    }
+    this.emitParticipants()
   }
 
-  private emitTiles() {
-    this.onTilesChange?.([...this.tiles.values()].sort(compareMediaTiles))
+  private emitParticipants() {
+    this.onParticipantsChange?.([...this.participants.values()].sort(compareParticipantTiles))
   }
 
   private setStatus(status: LiveKitStatus) {
@@ -249,21 +336,22 @@ function toPublications(publications?: Map<string, LiveKitPublicationLike>): Liv
   return [...(publications?.values() ?? [])].filter((publication) => publication.track)
 }
 
-function createTileId(
-  participant: LiveKitParticipantLike,
-  publication: LiveKitPublicationLike,
+function resolveSource(
   track: LiveKitPublicationLike['track'] | undefined,
-  isLocal: boolean,
-) {
-  const publicationId = publication.trackSid ?? publication.sid ?? track?.sid ?? 'track'
-  return `${isLocal ? 'local' : 'remote'}:${participant.identity}:${publicationId}`
-}
-
-function normalizeKind(kind?: string): MediaKind | null {
-  if (kind === 'video' || kind === 'audio') {
-    return kind
+  publication: LiveKitPublicationLike,
+): MediaSource {
+  const source = normalizeSource(track?.source ?? publication.source)
+  if (source !== 'unknown') {
+    return source
   }
-  return null
+  const kind = track?.kind ?? publication.kind
+  if (kind === 'video') {
+    return 'camera'
+  }
+  if (kind === 'audio') {
+    return 'microphone'
+  }
+  return 'unknown'
 }
 
 function normalizeSource(source?: string): MediaSource {

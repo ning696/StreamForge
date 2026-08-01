@@ -15,7 +15,7 @@ import { useChatStore } from '@/stores/chat'
 import { useConnectionStore, type RtcStatus, type SignalingStatus } from '@/stores/connection'
 import { useRoomStore } from '@/stores/room'
 import type { ChatMessage, PeerState, SignalingEnvelope } from '@/types'
-import type { MediaTile } from '@/livekit/connection'
+import type { ParticipantTile } from '@/livekit/connection'
 
 const router = useRouter()
 const route = useRoute()
@@ -26,7 +26,7 @@ const connectionStore = useConnectionStore()
 const loading = ref(true)
 const signaling = ref<SignalingClient | null>(null)
 const livekit = ref<LiveKitRoomConnection | null>(null)
-const mediaTiles = ref<MediaTile[]>([])
+const mediaParticipants = ref<ParticipantTile[]>([])
 const roomId = computed(() => String(route.params.roomId ?? ''))
 const appWsConnected = computed(() => connectionStore.signalingStatus === 'connected' && roomStore.joined)
 
@@ -51,12 +51,12 @@ async function enterRoom() {
     const connection = await joinRoom(roomId.value, authStore.user.userId, authStore.user.username)
     roomStore.setConnection(connection)
     chatStore.clear()
-    mediaTiles.value = []
+    mediaParticipants.value = []
 
     livekit.value = new LiveKitRoomConnection({
       onStatusChange: (status) => connectionStore.setRtcStatus(status),
-      onTilesChange: (tiles) => {
-        mediaTiles.value = tiles
+      onParticipantsChange: (participants) => {
+        mediaParticipants.value = participants
       },
       onError: (message) => {
         connectionStore.setError(message, { source: 'rtc' })
@@ -140,7 +140,7 @@ function shutdownConnections() {
   signaling.value = null
   livekit.value?.disconnect()
   livekit.value = null
-  mediaTiles.value = []
+  mediaParticipants.value = []
 }
 
 function rtcTagType(status: RtcStatus) {
@@ -221,7 +221,7 @@ function signalingStatusText(status: SignalingStatus) {
 
     <section v-loading="loading" class="room-shell">
       <section class="stage">
-        <VideoGrid :tiles="mediaTiles" :status="connectionStore.rtcStatus" />
+        <VideoGrid :participants="mediaParticipants" :status="connectionStore.rtcStatus" />
       </section>
 
       <aside class="side-rail">

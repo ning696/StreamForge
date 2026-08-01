@@ -36,7 +36,7 @@ StreamForge/
 powershell -ExecutionPolicy Bypass -File deploy\StreamForge\build.ps1
 ```
 
-`build.ps1` 默认把 `VITE_USER_API_BASE_URL` 和 `VITE_MEDIA_API_BASE_URL` 设置为 `/`，
+`build.ps1` 默认把 `VITE_USER_API_BASE_URL` 和 `VITE_MEDIA_API_BASE_URL` 设置为 `/`， 
 使生产前端通过同源 Nginx 反向代理访问 `/api/users/*` 和 `/api/rooms*`，不会把
 `localhost:8081` 或 `localhost:8080` 写入浏览器静态包。需要自定义独立 API 域名时，
 可在运行脚本前显式设置这两个环境变量。

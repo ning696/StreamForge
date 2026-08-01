@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "run-p type-check \"build-only {@}\" --",
+    "build:prod": "powershell -NoProfile -ExecutionPolicy Bypass -File ./build-production.ps1",
     "preview": "vite preview",
     "build-only": "vite build",
     "type-check": "vue-tsc --build"

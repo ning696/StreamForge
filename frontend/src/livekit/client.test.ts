@@ -1,65 +1,110 @@
 import { describe, expect, it } from 'vitest'
 import { LiveKitRoomConnection, type LiveKitRoomLike } from './client'
-import type { AttachableTrack, LiveKitStatus, MediaTile } from './connection'
+import type { AttachableTrack, LiveKitStatus, ParticipantTile } from './connection'
 
 describe('LiveKitRoomConnection', () => {
-  it('connects, enables local media, emits media tiles, and cleans up on disconnect', async () => {
+  it('groups camera and microphone tracks into one stable participant tile', async () => {
     const fakeRoom = new FakeRoom()
     const statuses: LiveKitStatus[] = []
-    const tileSnapshots: MediaTile[][] = []
-
-    const connection = new LiveKitRoomConnection({
-      createRoom: () => fakeRoom,
-      onStatusChange: (status) => statuses.push(status),
-      onTilesChange: (tiles) => tileSnapshots.push(tiles),
-    })
+    const snapshots: ParticipantTile[][] = []
+    const connection = createConnection(fakeRoom, statuses, snapshots)
 
     await connection.connect({ url: 'ws://livekit.test', token: 'token' })
 
     expect(fakeRoom.connectedWith).toEqual(['ws://livekit.test', 'token'])
     expect(fakeRoom.localParticipant.cameraAndMicrophoneEnabled).toBe(true)
     expect(statuses).toEqual(['connecting', 'connected'])
+    expect(snapshots.at(-1)?.map((participant) => participant.participantIdentity)).toEqual(['user-1'])
 
-    fakeRoom.emit('localTrackPublished', publication('local-camera', localVideoTrack()), fakeRoom.localParticipant)
+    const localCamera = mediaTrack('local-camera-track', 'video', 'camera')
+    const localMicrophone = mediaTrack('local-microphone-track', 'audio', 'microphone')
+    fakeRoom.emit('localTrackPublished', publication('local-camera', localCamera), fakeRoom.localParticipant)
     fakeRoom.emit(
-      'trackSubscribed',
-      remoteVideoTrack(),
-      publication('remote-camera', remoteVideoTrack()),
-      participant('user-2', 'Bob'),
+      'localTrackPublished',
+      publication('local-microphone', localMicrophone),
+      fakeRoom.localParticipant,
     )
 
-    expect(tileSnapshots.at(-1)?.map((tile) => tile.id)).toEqual([
-      'local:user-1:local-camera',
-      'remote:user-2:remote-camera',
-    ])
-
-    fakeRoom.emit(
-      'trackUnsubscribed',
-      remoteVideoTrack(),
-      publication('remote-camera', remoteVideoTrack()),
-      participant('user-2', 'Bob'),
-    )
-
-    expect(tileSnapshots.at(-1)?.map((tile) => tile.id)).toEqual(['local:user-1:local-camera'])
-
-    connection.disconnect()
-
-    expect(fakeRoom.disconnected).toBe(true)
-    expect(tileSnapshots.at(-1)).toEqual([])
-    expect(statuses.at(-1)).toBe('closed')
+    const local = snapshots.at(-1)?.[0]
+    expect(snapshots.at(-1)).toHaveLength(1)
+    expect(local?.cameraTrack).toBe(localCamera)
+    expect(local?.microphoneTrack).toBe(localMicrophone)
   })
 
-  it('keeps the room connected when local media permission fails', async () => {
+  it('creates a camera-off placeholder on join and preserves ordering across media changes', async () => {
+    const fakeRoom = new FakeRoom()
+    const snapshots: ParticipantTile[][] = []
+    const connection = createConnection(fakeRoom, [], snapshots)
+    await connection.connect({ url: 'ws://livekit.test', token: 'token' })
+
+    const bob = participant('user-2', 'Bob')
+    const carol = participant('user-3', 'Carol')
+    fakeRoom.emit('participantConnected', bob)
+    fakeRoom.emit('participantConnected', carol)
+
+    expect(snapshots.at(-1)?.map((item) => item.participantIdentity)).toEqual([
+      'user-1',
+      'user-2',
+      'user-3',
+    ])
+    expect(snapshots.at(-1)?.[1]?.cameraEnabled).toBe(false)
+
+    const bobCamera = mediaTrack('bob-camera-track', 'video', 'camera')
+    const bobPublication = publication('bob-camera', bobCamera)
+    fakeRoom.emit('trackSubscribed', bobCamera, bobPublication, bob)
+    fakeRoom.emit('trackMuted', bobPublication, bob)
+    fakeRoom.emit('trackUnmuted', bobPublication, bob)
+
+    expect(snapshots.at(-1)?.map((item) => item.participantIdentity)).toEqual([
+      'user-1',
+      'user-2',
+      'user-3',
+    ])
+    expect(snapshots.at(-1)?.[1]?.cameraEnabled).toBe(true)
+
+    fakeRoom.emit('trackUnsubscribed', bobCamera, bobPublication, bob)
+    expect(snapshots.at(-1)?.[1]?.cameraTrack).toBeUndefined()
+    expect(snapshots.at(-1)?.[1]?.cameraEnabled).toBe(false)
+    expect(snapshots.at(-1)).toHaveLength(3)
+  })
+
+  it('keeps remote audio on the participant and removes all media when the participant leaves', async () => {
+    const fakeRoom = new FakeRoom()
+    const snapshots: ParticipantTile[][] = []
+    const connection = createConnection(fakeRoom, [], snapshots)
+    await connection.connect({ url: 'ws://livekit.test', token: 'token' })
+
+    const bob = participant('user-2', 'Bob')
+    const audio = mediaTrack('bob-audio-track', 'audio', 'microphone')
+    const audioPublication = publication('bob-audio', audio)
+    fakeRoom.emit('participantConnected', bob)
+    fakeRoom.emit('trackSubscribed', audio, audioPublication, bob)
+
+    expect(snapshots.at(-1)).toHaveLength(2)
+    expect(snapshots.at(-1)?.[1]?.microphoneTrack).toBe(audio)
+    expect(snapshots.at(-1)?.[1]?.microphoneEnabled).toBe(true)
+
+    fakeRoom.emit('participantDisconnected', bob)
+    expect(snapshots.at(-1)?.map((item) => item.participantIdentity)).toEqual(['user-1'])
+
+    connection.disconnect()
+    expect(fakeRoom.disconnected).toBe(true)
+    expect(snapshots.at(-1)).toEqual([])
+  })
+
+  it('keeps the room and local placeholder when media permission fails', async () => {
     const fakeRoom = new FakeRoom()
     fakeRoom.localParticipant.enableCameraAndMicrophone = async () => {
       throw new Error('Permission denied')
     }
     const statuses: LiveKitStatus[] = []
+    const snapshots: ParticipantTile[][] = []
     const errors: string[] = []
 
     const connection = new LiveKitRoomConnection({
       createRoom: () => fakeRoom,
       onStatusChange: (status) => statuses.push(status),
+      onParticipantsChange: (participants) => snapshots.push(participants),
       onError: (message) => errors.push(message),
     })
 
@@ -67,8 +112,43 @@ describe('LiveKitRoomConnection', () => {
 
     expect(statuses).toEqual(['connecting', 'connected'])
     expect(errors).toEqual(['Permission denied'])
+    expect(snapshots.at(-1)).toHaveLength(1)
+    expect(snapshots.at(-1)?.[0]?.cameraEnabled).toBe(false)
+  })
+
+  it('tracks the latest screen share without creating an extra participant', async () => {
+    const fakeRoom = new FakeRoom()
+    const snapshots: ParticipantTile[][] = []
+    const connection = createConnection(fakeRoom, [], snapshots)
+    await connection.connect({ url: 'ws://livekit.test', token: 'token' })
+
+    const bob = participant('user-2', 'Bob')
+    const screen = mediaTrack('bob-screen-track', 'video', 'screen_share')
+    const screenPublication = publication('bob-screen', screen)
+    fakeRoom.emit('participantConnected', bob)
+    fakeRoom.emit('trackSubscribed', screen, screenPublication, bob)
+
+    expect(snapshots.at(-1)).toHaveLength(2)
+    expect(snapshots.at(-1)?.[1]?.screenShareTrack).toBe(screen)
+    expect(snapshots.at(-1)?.[1]?.screenSharing).toBe(true)
+
+    fakeRoom.emit('trackUnsubscribed', screen, screenPublication, bob)
+    expect(snapshots.at(-1)?.[1]?.screenShareTrack).toBeUndefined()
+    expect(snapshots.at(-1)?.[1]?.screenSharing).toBe(false)
   })
 })
+
+function createConnection(
+  fakeRoom: FakeRoom,
+  statuses: LiveKitStatus[],
+  snapshots: ParticipantTile[][],
+) {
+  return new LiveKitRoomConnection({
+    createRoom: () => fakeRoom,
+    onStatusChange: (status) => statuses.push(status),
+    onParticipantsChange: (participants) => snapshots.push(participants),
+  })
+}
 
 class FakeRoom implements LiveKitRoomLike {
   readonly localParticipant = {
@@ -117,31 +197,24 @@ function participant(identity: string, name: string) {
   return { identity, name }
 }
 
-function publication(trackSid: string, track: AttachableTrack) {
+function publication(trackSid: string, track: MediaTrack) {
   return {
     trackSid,
-    source: trackSid.includes('camera') ? 'camera' : 'microphone',
+    source: track.source,
+    kind: track.kind,
     isMuted: false,
     track,
   }
 }
 
-function localVideoTrack(): AttachableTrack & { kind: string; sid: string; source: string } {
-  return {
-    sid: 'local-track',
-    kind: 'video',
-    source: 'camera',
-    attach: () => document.createElement('video'),
-    detach: () => [],
-  }
-}
+type MediaTrack = AttachableTrack & { kind: string; sid: string; source: string }
 
-function remoteVideoTrack(): AttachableTrack & { kind: string; sid: string; source: string } {
+function mediaTrack(sid: string, kind: string, source: string): MediaTrack {
   return {
-    sid: 'remote-track',
-    kind: 'video',
-    source: 'camera',
-    attach: () => document.createElement('video'),
+    sid,
+    kind,
+    source,
+    attach: () => document.createElement(kind === 'video' ? 'video' : 'audio'),
     detach: () => [],
   }
 }
