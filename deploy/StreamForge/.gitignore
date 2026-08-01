@@ -1,0 +1,7 @@
+# 本地敏感配置
+.env
+
+# 构建产物（由 build.sh 生成，不入库）
+user-service/user-service.jar
+media-service/media-service
+frontend/dist/

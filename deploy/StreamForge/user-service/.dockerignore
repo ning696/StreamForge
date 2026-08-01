@@ -1,0 +1,4 @@
+*
+!Dockerfile
+!user-service.jar
+!.dockerignore

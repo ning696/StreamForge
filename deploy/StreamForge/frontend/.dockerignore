@@ -1,0 +1,6 @@
+*
+!Dockerfile
+!nginx.conf
+!dist
+!dist/**
+!.dockerignore

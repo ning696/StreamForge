@@ -1,0 +1,70 @@
+name: streamforge
+
+services:
+  livekit:
+    image: livekit/livekit-server:v1.8
+    container_name: streamforge-livekit
+    restart: unless-stopped
+    command: ["--config", "/etc/livekit.yaml"]
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
+    volumes:
+      - ./livekit/livekit.yaml:/etc/livekit.yaml:ro
+    network_mode: host
+
+  user-service:
+    build:
+      context: ./user-service
+    image: streamforge/user-service:latest
+    container_name: streamforge-user-service
+    restart: unless-stopped
+    environment:
+      MYSQL_HOST: ${MYSQL_HOST}
+      MYSQL_PORT: ${MYSQL_PORT}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USERNAME: ${MYSQL_USERNAME}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    expose:
+      - "8081"
+    networks:
+      - streamforge
+
+  media-service:
+    build:
+      context: ./media-service
+    image: streamforge/media-service:latest
+    container_name: streamforge-media-service
+    restart: unless-stopped
+    environment:
+      SERVER_PORT: "8080"
+      PUBLIC_WS_BASE_URL: "wss://${APP_DOMAIN}"
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT}
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      REDIS_DB: ${REDIS_DB}
+      LIVEKIT_URL: "wss://${LIVEKIT_DOMAIN}"
+      LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+      LIVEKIT_TOKEN_TTL_SECONDS: ${LIVEKIT_TOKEN_TTL_SECONDS}
+    expose:
+      - "8080"
+    networks:
+      - streamforge
+
+  frontend:
+    build:
+      context: ./frontend
+    image: streamforge/frontend:latest
+    container_name: streamforge-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-8088}:80"
+    depends_on:
+      - user-service
+      - media-service
+    networks:
+      - streamforge
+
+networks:
+  streamforge:
+    driver: bridge
